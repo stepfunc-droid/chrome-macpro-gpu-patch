@@ -106,6 +106,47 @@ def inspect_binary_patterns(original):
         if len(positions) > 8:
             report.append(f"  ... {len(positions)-8} more omitted")
 
+    # Read-only upstream-patch reconnaissance for M157. These patterns were
+    # authored around M152/M153 and MUST NOT be applied without checking
+    # the control-flow of the exact M157 binary. GpuMode=3 in M157 denotes
+    # HARDWARE_GRAPHITE, not DISABLED, despite upstream patch 3's description.
+    upstream_signatures = (
+        ("P3 GPU mode (conditional + write 3)", re.compile(
+            rb"\x84\xc0(?:\x0f\x84.{4}|\x74.)(?:.{0,16})"
+            rb"\xc7\x45.\x03\x00\x00\x00\x48\x8b\x83", re.DOTALL)),
+        ("P5 IOSurface factory", re.compile(
+            rb"\x45\x8b\x47\x38\x4c\x89\x6c\x24\x18"
+            rb"\x89\x44\x24\x10\x0f\xb6\x45."
+            rb"\x89\x44\x24\x08\xc7\x04\x24\x01\x00\x00\x00",
+            re.DOTALL)),
+        ("P6 IOSurface target validate", re.compile(
+            rb"\x55\x48\x89\xe5(?:\x41[\x50-\x57]|[\x50-\x57]){1,4}"
+            rb"\x48\x81\xec\x30\x01\x00\x00\x81\xfe\xe1\x0d\x00\x00",
+            re.DOTALL)),
+        ("P7 IOSurface backing target", re.compile(
+            rb"\x8b\x45.\x89\x83..\x00\x00\x8b\x45."
+            rb"\x88\x83..\x00\x00\x45\x31\xf6"
+            rb"\x44\x89\xb3..\x00\x00"
+            rb"\x66\xc7\x83..\x00\x00\x00\x00",
+            re.DOTALL)),
+    )
+    report.append("Upstream P3/P5/P6/P7 signature audit (READ-ONLY, M157 UNVALIDATED):")
+    for label, pattern in upstream_signatures:
+        hits = list(pattern.finditer(original))
+        report.append(f"  {label}: {len(hits)} candidate(s)")
+        for hit in hits[:3]:
+            lo = max(0, hit.start() - 24)
+            hi = min(len(original), hit.end() + 24)
+            report.append(
+                f"    file offset 0x{hit.start():x}, context "
+                f"[{lo:x}:{hi:x}]: {original[lo:hi].hex(' ')}"
+            )
+        if len(hits) > 3:
+            report.append(f"    ... {len(hits) - 3} further matches omitted")
+    report.append("P4 Seatbelt bypass intentionally omitted from audit targets.")
+    report.append("Neither a unique byte pattern nor a numeric enum constant "
+                  "proves a function or a safe patch target.")
+
     report.append("Offsets are FILE offsets, not virtual addresses. No patch "
                   "candidate is inferred from this report.")
     return report
