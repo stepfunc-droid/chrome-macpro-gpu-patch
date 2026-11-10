@@ -48,6 +48,46 @@ def occurrences(haystack, needle):
         pos += 1
 
 
+def inspect_binary_patterns(original):
+    """Return a bounded, read-only report about unsupported byte patterns.
+
+    These are diagnostic leads, NOT patch targets. In particular, a nearby
+    movabs constant is not proof that an instruction belongs to ANGLE setup.
+    """
+    report = []
+    p1_exact = occurrences(original, GL_ALLOWED_ORIG)
+    p1_context = list(GL_ANCHOR.finditer(original))
+    report.append(f"OpenGL allow check: exact={len(p1_exact)}, anchored={len(p1_context)}")
+    for i, pattern in enumerate(DISPLAY_PATTERNS, 1):
+        hits = list(pattern.finditer(original))
+        report.append(f"Display pattern {i}: {len(hits)} match(es)")
+        for hit in hits[:5]:
+            report.append(f"  pattern {i} at file offset 0x{hit.start():x}: "
+                          f"{original[max(0, hit.start()-16):hit.end()+16].hex(' ')}")
+        if len(hits) > 5:
+            report.append(f"  ... {len(hits)-5} more match(es) omitted")
+
+    # Search for a compiled constant used by earlier Chromium versions.
+    # The M157 compiler may encode this differently or remove it altogether.
+    anchors = (
+        ("legacy movabs", bytes.fromhex("48 b8 09 00 00 00 03 00")),
+        ("legacy stack compare", bytes.fromhex("83 7d 00 00 0f 85")),
+    )
+    for label, marker in anchors:
+        positions = occurrences(original, marker)
+        report.append(f"{label}: {len(positions)} occurrence(s)")
+        for idx in positions[:8]:
+            lo, hi = max(0, idx - 48), min(len(original), idx + len(marker) + 24)
+            report.append(f"  file offset 0x{idx:x}, bytes [{lo:x}:{hi:x}]: "
+                          f"{original[lo:hi].hex(' ')}")
+        if len(positions) > 8:
+            report.append(f"  ... {len(positions)-8} more omitted")
+
+    report.append("Offsets are FILE offsets, not virtual addresses. No patch "
+                  "candidate is inferred from this report.")
+    return report
+
+
 def plan_binary_patch(original):
     """Return patched bytes and offset report, refusing ambiguous matches."""
     data = bytearray(original)
@@ -158,14 +198,28 @@ def preflight(source, angle, output, experimental):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, help="Clean, latest official Google Chrome.app")
-    parser.add_argument("--angle-from", required=True, help="Clean Google Chrome 151.app with ANGLE libraries")
-    parser.add_argument("--output", required=True, help="NEW test copy, under your home (must not exist)")
+    parser.add_argument("--diagnose", action="store_true", help="Read-only pattern report; needs only --source")
+    parser.add_argument("--angle-from", help="Clean Google Chrome 151.app with ANGLE libraries")
+    parser.add_argument("--output", help="NEW test copy, under your home (must not exist)")
     parser.add_argument("--experimental-version", action="store_true",
                         help="Allow unvalidated milestone (e.g. M157), if byte signatures match exactly")
     parser.add_argument("--apply", action="store_true", help="Actually create and re-sign the test copy")
     args = parser.parse_args(argv)
 
     try:
+        if args.diagnose:
+            if args.apply:
+                raise PatchError("--diagnose cannot be combined with --apply")
+            source, major, version, _, binary = checked_app(args.source)
+            original = binary.read_bytes()
+            print(f"Read-only diagnostic: Chrome {version} (M{major})")
+            print(f"Input binary: {binary}")
+            print(f"Size: {len(original)} bytes; SHA256: {sha256(original)}")
+            for line in inspect_binary_patterns(original):
+                print(line)
+            return 0
+        if not args.angle_from or not args.output:
+            raise PatchError("--angle-from and --output are required unless --diagnose is used")
         if args.apply and sys.platform != "darwin":
             raise PatchError("Applying requires macOS; pattern analysis works on other systems")
         if args.apply and os.geteuid() == 0:
