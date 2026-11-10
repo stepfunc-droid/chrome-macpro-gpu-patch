@@ -157,7 +157,7 @@ class BinaryPatchTests(unittest.TestCase):
         patch_gpu_mode_branch_m157(modified, 2)
         branch = 2 + M157_P3_BRANCH_OFFSET
         enum = 2 + M157_P3_ENUM_OFFSET
-        self.assertEqual(modified[branch:branch + 6], b"\\x90" * 6)
+        self.assertEqual(modified[branch:branch + 6], bytes([0x90]) * 6)
         self.assertEqual(modified[enum], 1)
         self.assertEqual(modified[:2], original[:2])
         self.assertEqual(modified[-2:], original[-2:])
