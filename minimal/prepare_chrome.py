@@ -82,12 +82,6 @@ def shell_script(app_name, version):
     those flags; use the script when testing.
     """
     prefix = shlex.quote(app_name)
-    lines = [
-        "#!/bin/bash",
-        "set -e",
-        'SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"',
-        f"APP=\"$SCRIPT_DIR/\"{prefix}" if False else "",
-    ]
     # Use shell-safe single-quoted basename, not interpolation into quotes.
     lines = [
         "#!/bin/bash",
@@ -143,6 +137,8 @@ def prepare(*, check_only=False):
             target = stack.enter_context(mount_dmg(TARGET_DMG, working / "target"))
             donor = stack.enter_context(mount_dmg(ANGLE_DMG, working / "angle151"))
             _, target_milestone, version, _, target_binary = checked_app(target)
+            if not __import__("re").fullmatch(r"[0-9]+(?:\\.[0-9]+){2,3}", version):
+                raise PreparationError(f"Invalid Chrome version string: {version!r}")
             _, donor_milestone, donor_version, donor_fw, _ = checked_app(donor)
             if donor_milestone != 151:
                 raise PreparationError(
@@ -197,6 +193,7 @@ def prepare(*, check_only=False):
                 copy_angle_without_flags(donor_lib, staged_libs / lib)
             sign_test_copy(stage)
             validate_stage(stage, modified, offsets, version)
+            signed_framework_hash = hashlib.sha256(stage_binary.read_bytes()).hexdigest()
             del original, modified
 
             # File publication happens only after all signing and smoke checks.
@@ -210,6 +207,7 @@ def prepare(*, check_only=False):
                 "source_dmg": str(TARGET_DMG),
                 "angle_dmg": str(ANGLE_DMG),
                 "source_framework_sha256": digest,
+                "signed_framework_sha256": signed_framework_hash,
                 "compatibility": confidence,
                 "patches": {name: hex(pos) for name, pos in offsets.items()},
                 "p4_seatbelt_bypass": False,
