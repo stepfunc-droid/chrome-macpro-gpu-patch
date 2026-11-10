@@ -5,6 +5,71 @@ independent alternative to the upstream multi-browser patcher, intended
 for testing a *copy* of Google Chrome on an Intel Mac with legacy OCLP GPU
 drivers. It does **not** patch your everyday Chrome installation.
 
+## Recommended workflow: two fixed DMGs, target version discovered automatically
+
+`minimal/prepare_chrome.py` is now the recommended entry point. Its input paths
+are fixed, but the Chrome **version is read from the target DMG**, not hardcoded:
+
+- `~/Downloads/googlechrome.dmg`: the target Chrome release
+- `~/Downloads/google-chrome-151-0-7922-174.dmg`: official ANGLE donor
+
+To check the next target version without generating files:
+
+```bash
+python3 minimal/prepare_chrome.py --check-only
+```
+
+The checker locates P1/P2/P3/P5/P6/P7 by anchored machine-code signatures,
+requires a unique match for every patch, verifies original instructions and
+replacement sizes, and refuses an unmatched or ambiguous build. P4 is
+deliberately excluded. A matching new version is **structurally compatible**,
+but is NOT yet proven to work on the NVIDIA GT 750M.
+
+To prepare a new standalone candidate in Downloads:
+
+```bash
+python3 minimal/prepare_chrome.py
+```
+
+The command publishes three version-labeled files (refusing to overwrite
+existing ones): `~/Downloads/Chrome GPU <version>.app`,
+`~/Downloads/launch-chrome-gpu-<version>.sh` and
+`~/Downloads/chrome-gpu-<version>.patch.json`.
+Run the generated `.sh` to test actual rendering and `chrome://gpu`, using
+its separate disposable profile. It includes exactly the successful
+graphics compatibility arguments from the M157 test. The `.sh` can also
+launch the candidate after you **manually** move/rename it to
+`/Applications/Google Chrome.app`, but it first checks the signed
+framework SHA-256 from the build manifest.
+
+**No automatic /Applications installation.** A passing static scan,
+`codesign --verify`, and `--version` are not GPU functional tests. After
+confirming the UI/WebGL/GPU behaviour yourself, back up the existing
+installed browser and move the candidate manually.
+
+### Make the manually installed Chrome read-only
+
+Only *after* you have manually installed and checked the exact generated
+candidate at `/Applications/Google Chrome.app`, run:
+
+```bash
+python3 minimal/lock_chrome.py
+```
+
+This is an **explicit second action**, not an installation side effect.
+It checks `codesign`, the version and the signed framework SHA-256 against
+the manifest in Downloads, then removes write permissions and applies
+macOS user-immutable `uchg` to the app. It does not move or overwrite
+anything; it may fail if your account does not own the installed files.
+Neither file permissions nor `uchg` can absolutely block a privileged
+Google updater. There is no background watcher or automatic patcher.
+
+All future builds remain opt-in. This patcher does not disable SIP or
+GPU sandbox; P6 does bypass an IOSurface validation check, so patched
+Chrome should be considered a non-vendor-signed experimental build.
+
+---
+
 ## Chrome 157 complete graphics compatibility mode (P4 excluded)
 
 This is an **opt-in graphics-focused test** for exactly Google Chrome
