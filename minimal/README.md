@@ -1,9 +1,74 @@
-# Minimal Chrome ANGLE/OpenGL experiment (Kepler/OCLP)
+# Chrome ANGLE/OpenGL graphics compatibility experiments (Kepler/OCLP)
 
 **Status: experimental, NOT a verified Chrome 157 fix.** This is an
 independent alternative to the upstream multi-browser patcher, intended
 for testing a *copy* of Google Chrome on an Intel Mac with legacy OCLP GPU
 drivers. It does **not** patch your everyday Chrome installation.
+
+## Chrome 157 complete graphics compatibility mode (P4 excluded)
+
+This is an **opt-in graphics-focused test** for exactly Google Chrome
+157.0.8103.51 x86_64 framework SHA-256
+`81fc51a5952b527f5cd8e9549107effde2f0d4655f75aab75bcfbebae7f6793b`.
+
+The patcher applies all of these as ONE validated patch set:
+
+- **P1/P2:** Restore ANGLE OpenGL allowlist / display initialization.
+- **P3:** Adapt M157 hardware GPU mode candidate to HARDWARE_GL.
+- **P5/P7:** Adapt IOSurface texture targets to `GL_TEXTURE_RECTANGLE`.
+- **P6:** Make IOSurface texture-target validation always succeed. This is
+  **a graphics-related validation bypass and a security tradeoff**.
+- **P4 deliberately EXCLUDED:** Do not bypass Seatbelt sandbox-state checks.
+
+GPU crash fallback remains enabled. No `--no-sandbox`, SIP changes,
+launcher replacement, certificate installation, background service,
+automatic update or downloaded ANGLE libraries. The existing signed
+Chrome 151 app is the ANGLE library donor, and only a new copy is patched.
+
+Each original byte region and offset is matched against the audited
+Chrome 157 binary before the copy is created. Any mismatch aborts.
+**This is an unverified experiment on NVIDIA GT 750M, not an assurance**
+of stability, compatibility or safety. Do not use sensitive accounts.
+
+### Build a separate v4 test copy
+
+```bash
+git pull origin experiment/minimal-chrome-gl
+
+python3 minimal/patch_chrome.py \
+  --source "$HOME/Downloads/Google Chrome.app" \
+  --angle-from "/Applications/Google Chrome.app" \
+  --output "$HOME/Downloads/Chrome GPU Test v4.app" \
+  --experimental-version \
+  --full-graphics-compat \
+  --apply --debug
+```
+
+After signing, the patcher prints a launch command with all graphics flags.
+To run explicitly without replacing the original executable:
+
+```bash
+"$HOME/Downloads/Chrome GPU Test v4.app/Contents/MacOS/Google Chrome" \
+  --user-data-dir="$HOME/Downloads/Chrome-GPU-Full-Compat-Profile" \
+  --use-angle=gl \
+  --ignore-gpu-blocklist \
+  --disable-features=SkiaGraphite,MediaGmbVideoFramePoolMappableSI \
+  --disable-zero-copy \
+  --ui-disable-zero-copy \
+  --disable-gpu-memory-buffer-compositor-resources \
+  --disable-gpu-memory-buffer-video-frames \
+  --disable-accelerated-video-decode \
+  --disable-accelerated-2d-canvas \
+  --disable-partial-raster \
+  --no-first-run
+```
+
+Inspect `chrome://gpu`. A successful code-signature check is not proof
+of hardware acceleration. If UI artifacts or GPU crashes occur, quit
+this isolated copy. Do not weaken Sandbox or install auto-patching.
+
+Source attribution: the P1–P7 techniques (excluding P4) and flags are
+adapted from https://github.com/khoinguyen88kt/chrome-macpro-gpu-patch.
 
 ## Scope / security choices
 
@@ -13,7 +78,7 @@ drivers. It does **not** patch your everyday Chrome installation.
   a HARDWARE_GL candidate for the normally selected Graphite path. Not proven
   on the user's GPU. The opt-in does not change other default behaviors.
 - **No** `Seatbelt::IsSandboxed()` or GPU sandbox edits.
-- **No** `ScopedEGLSurfaceIOSurface::ValidateTarget()` bypass.
+- **Default mode:** no IOSurface validation bypass; **opt-in full graphics mode:** P6 explicitly bypasses it (see above).
 - **No** GPU fallback disabling and no IOSurface texture-target edits.
   The optional GPU-mode experiment adds a hardware GL candidate; normal
   recovery/fallback code is not patched.
