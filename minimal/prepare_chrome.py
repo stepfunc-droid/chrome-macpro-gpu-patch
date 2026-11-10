@@ -75,7 +75,7 @@ def mount_dmg(dmg, mountpoint):
                       f"{result.stderr.strip()}", file=sys.stderr)
 
 
-def shell_script(app_name, version):
+def shell_script(app_name, version, signed_framework_hash=None):
     """A launch script beside the app, with a disposable independent profile.
 
     It intentionally supplies the SAME graphics arguments that worked on
@@ -90,10 +90,35 @@ def shell_script(app_name, version):
         'SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"',
         f"APP=\"$SCRIPT_DIR/\"{prefix}",
         'BIN="$APP/Contents/MacOS/Google Chrome"',
-        'if [ ! -x "$BIN" ]; then',
-        '  echo "Cannot find Chrome executable: $BIN" >&2',
-        "  exit 1",
-        "fi",
+    ]
+    if signed_framework_hash:
+        if not re.fullmatch(r"[0-9a-f]{64}", signed_framework_hash):
+            raise PreparationError("Invalid framework SHA256 for test launcher")
+        lines.extend([
+            'if [ ! -x "$BIN" ]; then',
+            '  APP="/Applications/Google Chrome.app"',
+            '  BIN="$APP/Contents/MacOS/Google Chrome"',
+            '  FW="$APP/Contents/Frameworks/Google Chrome Framework.framework/Versions/Current/Google Chrome Framework"',
+            '  if [ ! -x "$BIN" ] || [ ! -f "$FW" ]; then',
+            '    echo "Prepared Chrome not found in Downloads or Applications" >&2',
+            '    exit 1',
+            '  fi',
+            '  ACTUAL_HASH=$(/usr/bin/shasum -a 256 "$FW")',
+            '  ACTUAL_HASH=${ACTUAL_HASH%% *}',
+            f'  if [ "$ACTUAL_HASH" != "{signed_framework_hash}" ]; then',
+            '    echo "Applications Chrome does not match the verified GPU patch" >&2',
+            '    exit 1',
+            '  fi',
+            'fi',
+        ])
+    else:
+        lines.extend([
+            'if [ ! -x "$BIN" ]; then',
+            '  echo "Cannot find Chrome executable: $BIN" >&2',
+            "  exit 1",
+            "fi",
+        ])
+    lines.extend([
         'exec "$BIN" \\',
         f'  --user-data-dir="$HOME/Downloads/Chrome-GPU-{version}-Profile" \\',
     ]
@@ -200,7 +225,8 @@ def prepare(*, check_only=False):
             # File publication happens only after all signing and smoke checks.
             # All final outputs live under ~/Downloads, never /Applications.
             shell_tmp = working / shell_name
-            shell_tmp.write_text(shell_script(app_name, version), encoding="utf-8")
+            shell_tmp.write_text(shell_script(app_name, version, signed_framework_hash),
+                                encoding="utf-8")
             shell_tmp.chmod(0o755)
             manifest_tmp = working / manifest_name
             manifest_tmp.write_text(json.dumps({
