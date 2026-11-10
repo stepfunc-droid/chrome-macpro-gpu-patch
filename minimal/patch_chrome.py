@@ -16,6 +16,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import traceback
 
 from signing import sign_test_copy, SigningError
 
@@ -241,7 +242,9 @@ def main(argv=None):
     parser.add_argument("--experimental-version", action="store_true",
                         help="Allow unvalidated milestone (e.g. M157), if byte signatures match exactly")
     parser.add_argument("--apply", action="store_true", help="Actually create and re-sign the test copy")
+    parser.add_argument("--debug", action="store_true", help="Show full traceback if staged-copy operations fail")
     args = parser.parse_args(argv)
+    phase = "preflight"
 
     try:
         if args.diagnose:
@@ -274,32 +277,43 @@ def main(argv=None):
             return 0
 
         # Verify the Chrome 151 ANGLE donor without changing its installed app.
+        phase = "verify donor Chrome 151 signature"
         verify_official_google_app(Path(args.angle_from).expanduser().resolve(strict=True))
         workdir = Path(tempfile.mkdtemp(prefix=".chrome-gl-test-", dir=str(output.parent)))
         stage = workdir / "Google Chrome.app"
         try:
             # --norsrc skips HFS resource forks and Finder metadata while
             # preserving the actual executable and signed bundle resources.
+            phase = "clone Chrome 157 into staging"
             cmd(["/usr/bin/ditto", "--norsrc", str(source), str(stage)])
             _, copied_major, _, copied_fw, copied_binary = checked_app(stage)
             if sha256(copied_binary.read_bytes()) != sha256(original):
                 raise PatchError("Clone did not match original; aborting")
+            phase = "remove unsupported staged metadata"
             count = strip_codesign_detritus_from_copy(stage)
             print(f"[*] Removed {count} prohibited Finder/resource-fork attributes from test copy.")
             # Verify ORIGINAL Google-signed content in the CLEANED COPY.
             # A damaged vendor signature must still fail, not be ignored.
+            phase = "verify staged Google signature"
             verify_official_google_app(stage)
+            phase = "write two framework byte patches"
             copied_binary.write_bytes(modified)
             dest_libdir = copied_fw / "Libraries"
-            dest_libdir.mkdir(parents=True, exist_ok=True)
+            phase = "check staged Libraries directory"
+            if not dest_libdir.is_dir():
+                dest_libdir.mkdir(parents=True, exist_ok=True)
             for donor in libs:
+                phase = f"copy ANGLE library {donor.name}"
                 shutil.copy2(donor, dest_libdir / donor.name)
             # Ad-hoc signing changes the browser identity. Never preserve
             # Google-only Team ID/keychain entitlements in locally signed code.
             # Sign library/framework/helper/outer app separately per Chromium.
+            phase = "sign staged Chrome components"
+            print("[*] Signing staged Chrome components...", flush=True)
             sign_test_copy(stage)
             if output.exists() or output.is_symlink():
                 raise PatchError("Output appeared while patching; refusing overwrite")
+            phase = "publish staged Chrome test copy"
             stage.rename(output)
         finally:
             shutil.rmtree(workdir)
@@ -312,7 +326,9 @@ def main(argv=None):
         print("To uninstall, close the test browser and delete only the test .app and profile.")
         return 0
     except (PatchError, SigningError, OSError, ValueError, subprocess.SubprocessError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR in phase [{phase}]: {type(exc).__name__}: {exc}", file=sys.stderr)
+        if args.debug:
+            traceback.print_exc()
         return 1
 
 
