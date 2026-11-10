@@ -31,9 +31,10 @@ To prepare a new standalone candidate in Downloads:
 python3 minimal/prepare_chrome.py
 ```
 
-The command publishes three version-labeled files (refusing to overwrite
-existing ones): `~/Downloads/Chrome GPU <version>.app`,
-`~/Downloads/launch-chrome-gpu-<version>.sh` and
+The command publishes a standard-named Chrome app, launch script, and
+versioned diagnostic manifest (refusing to overwrite
+existing ones): `~/Downloads/Google Chrome.app`,
+`~/Downloads/launch-chrome-gpu.sh` and
 `~/Downloads/chrome-gpu-<version>.patch.json`.
 Run the generated `.sh` to test actual rendering and `chrome://gpu`, using
 its separate disposable profile. It includes exactly the successful
