@@ -151,6 +151,30 @@ class BinaryPatchTests(unittest.TestCase):
         self.assertIn("Display pattern 1: 0 match(es)", report)
         self.assertIn("Display pattern 2: 0 match(es)", report)
 
+    def test_readonly_upstream_signature_audit(self):
+        # Synthetic candidate signatures from the upstream patcher, not a
+        # claim that any match belongs to the corresponding M157 function.
+        p3 = bytes.fromhex("84 c0 74 05 c7 45 ac 03 00 00 00 48 8b 83")
+        p5 = bytes.fromhex(
+            "45 8b 47 38 4c 89 6c 24 18 89 44 24 10 0f b6 45 aa"
+            "89 44 24 08 c7 04 24 01 00 00 00")
+        p6 = bytes.fromhex(
+            "55 48 89 e5 41 56 53 48 81 ec 30 01 00 00"
+            "81 fe e1 0d 00 00")
+        p7 = bytes.fromhex(
+            "8b 45 d0 89 83 88 01 00 00 8b 45 d8"
+            "88 83 8c 01 00 00 45 31 f6 44 89 b3 90 01 00 00"
+            "66 c7 83 94 01 00 00 00 00")
+        sample = b"\xcc" * 30 + p3 + b"\xcc" * 30 + p5 + b"\xcc" * 30 + p6 + b"\xcc" * 30 + p7
+        before = bytes(sample)
+        report = "\n".join(inspect_binary_patterns(sample))
+        self.assertIn("P3 GPU mode (conditional + write 3): 1 candidate(s)", report)
+        self.assertIn("P5 IOSurface factory: 1 candidate(s)", report)
+        self.assertIn("P6 IOSurface target validate: 1 candidate(s)", report)
+        self.assertIn("P7 IOSurface backing target: 1 candidate(s)", report)
+        self.assertIn("P4 Seatbelt bypass intentionally omitted", report)
+        self.assertEqual(sample, before)
+
     def test_diagnostic_reports_known_signature(self):
         report = "\n".join(inspect_binary_patterns(fixture()))
         self.assertIn("Display pattern 1: 1 match(es)", report)
