@@ -190,8 +190,10 @@ def prepare(*, check_only=False):
                 print("[+] Six-patch structural check passed; NO files created.")
                 return None
 
-            app_name = f"Chrome GPU {version}.app"
-            shell_name = f"launch-chrome-gpu-{version}.sh"
+            # Fixed output names: the user can move Google Chrome.app to
+            # /Applications directly, without renaming it.
+            app_name = "Google Chrome.app"
+            shell_name = "launch-chrome-gpu.sh"
             manifest_name = f"chrome-gpu-{version}.patch.json"
             app_output = DOWNLOADS / app_name
             shell_output = DOWNLOADS / shell_name
