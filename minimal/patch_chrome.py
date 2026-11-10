@@ -267,7 +267,7 @@ def verify_full_graphics_output(app_path):
         raise PatchError(f"Unexpected framework size {len(data)}")
     p1 = occurrences(data, GL_ALLOWED_PATCHED)
     p2 = list(re.finditer(
-        rb"\\x84\\xc0\\xe9.{4}\\x90\\x48\\xb8\\x09\\x00\\x00\\x00\\x03\\x00",
+        rb"\x84\xc0\xe9.{4}\x90\x48\xb8\x09\x00\x00\x00\x03\x00",
         data, re.DOTALL))
     expected_p3 = bytearray(M157_P3_ORIGINAL)
     patch_gpu_mode_branch_m157(expected_p3, 0)
