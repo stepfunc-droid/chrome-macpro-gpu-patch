@@ -12,10 +12,8 @@ pre-install checks pass, then archived on the same volume for rollback.
 import argparse
 from contextlib import contextmanager, ExitStack
 from datetime import datetime
-import json
 import os
 from pathlib import Path
-import plistlib
 import shutil
 import stat
 import subprocess
@@ -101,6 +99,16 @@ def validate_candidate(app, *, smoke=True):
     launcher = app / "Contents/MacOS/Google Chrome"
     if not launcher.is_file() or launcher.is_symlink():
         raise InstallationError("Missing or symlinked native launcher")
+    launcher_bytes = launcher.read_bytes()
+    missing_flags = [flag for flag in GPU_FLAGS
+                     if flag.encode("ascii") not in launcher_bytes]
+    if missing_flags:
+        raise InstallationError(
+            "Native launcher does not include expected compatibility flags: "
+            + ", ".join(missing_flags)
+        )
+    if b"--no-sandbox" in launcher_bytes or b"--disable-gpu-sandbox" in launcher_bytes:
+        raise InstallationError("Launcher unexpectedly disables sandbox")
     if smoke:
         try:
             version_output = call([launcher, "--version"], timeout=20)
@@ -182,56 +190,58 @@ def install_candidate(candidate):
 
     # Stage on the SAME volume as the destination; no original app changes
     # until the signed, validated pending copy is ready.
-    with tempfile.TemporaryDirectory(prefix=".chrome-gpu-install-control-") as _:
-        pending = APPLICATIONS / f".Google Chrome.gpu-pending-{os.getpid()}.app"
-        if pending.exists() or pending.is_symlink():
-            raise InstallationError(f"Refusing existing pending path: {pending}")
-        backup = None
-        old_locked = False
-        moved_new = False
-        moved_old = False
-        try:
-            print("[*] Copying verified candidate to /Applications staging...")
-            call(["/usr/bin/ditto", "--norsrc", candidate, pending])
-            validate_candidate(pending)
-            if DESTINATION.exists():
-                old_locked = is_immutable(DESTINATION)
-                backup = unique_backup_path()
-            # Last chance to reject a concurrent browser launch.
-            if running_installed_chrome():
-                raise InstallationError("Chrome started while staging: aborting")
-            if backup:
-                # Unset only the top-level immutable flag after ALL
-                # pre-install checks have passed.
-                clear_root_immutable(DESTINATION)
-                DESTINATION.rename(backup)
-                moved_old = True
-            pending.rename(DESTINATION)
-            moved_new = True
-            validate_candidate(DESTINATION, smoke=False)
-            set_readonly(DESTINATION)
-            # Only now is installation committed; retain rollback backup.
-            print(f"[+] Installed: {DESTINATION}")
-            if backup:
-                print(f"[+] Previous Chrome retained as rollback backup: {backup}")
-            print("[!] The app-level read-only/uchg protection is not an "
-                  "absolute block against privileged Google Update services.")
-            return backup
-        except Exception:
-            print("[!] Install failed. Restoring previous Chrome if it was moved...",
-                  file=sys.stderr)
-            if moved_new and DESTINATION.exists():
-                clear_root_immutable(DESTINATION)
-                # Avoid removing a candidate for which a user might want logs.
-                if not pending.exists():
-                    DESTINATION.rename(pending)
-            if moved_old and backup and backup.exists() and not DESTINATION.exists():
-                backup.rename(DESTINATION)
-                if old_locked:
-                    call(["/usr/bin/chflags", "uchg", DESTINATION])
-            raise
-        finally:
-            safe_remove_pending(pending)
+    pending = APPLICATIONS / f".Google Chrome.gpu-pending-{os.getpid()}.app"
+    if pending.exists() or pending.is_symlink():
+        raise InstallationError(f"Refusing existing pending path: {pending}")
+    backup = None
+    old_locked = False
+    moved_new = False
+    moved_old = False
+    try:
+        print("[*] Copying verified candidate to /Applications staging...")
+        call(["/usr/bin/ditto", "--norsrc", candidate, pending])
+        validate_candidate(pending)
+        if DESTINATION.exists():
+            old_locked = is_immutable(DESTINATION)
+            backup = unique_backup_path()
+        # Last chance to reject a concurrent browser launch.
+        if running_installed_chrome():
+            raise InstallationError("Chrome started while staging: aborting")
+        if backup:
+            # Unset only the top-level immutable flag after ALL
+            # pre-install checks have passed.
+            clear_root_immutable(DESTINATION)
+            DESTINATION.rename(backup)
+            moved_old = True
+        pending.rename(DESTINATION)
+        moved_new = True
+        validate_candidate(DESTINATION, smoke=False)
+        set_readonly(DESTINATION)
+        # Only now is installation committed; retain rollback backup.
+        print(f"[+] Installed: {DESTINATION}")
+        if backup:
+            print(f"[+] Previous Chrome retained as rollback backup: {backup}")
+        print("[!] The app-level read-only/uchg protection is not an "
+              "absolute block against privileged Google Update services.")
+        return backup
+    except Exception:
+        print("[!] Install failed. Restoring previous Chrome if it was moved...",
+              file=sys.stderr)
+        if moved_new and DESTINATION.exists():
+            clear_root_immutable(DESTINATION)
+            # Avoid removing a candidate for which a user might want logs.
+            if not pending.exists():
+                DESTINATION.rename(pending)
+        if moved_old and backup and backup.exists() and not DESTINATION.exists():
+            backup.rename(DESTINATION)
+            if old_locked:
+                call(["/usr/bin/chflags", "uchg", DESTINATION])
+        elif old_locked and not moved_old and DESTINATION.exists():
+            # A failed rename may have left the old root unlocked.
+            call(["/usr/bin/chflags", "uchg", DESTINATION])
+        raise
+    finally:
+        safe_remove_pending(pending)
 
 
 def build_from_dmgs(workdir):
