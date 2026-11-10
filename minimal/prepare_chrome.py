@@ -62,8 +62,11 @@ def mount_dmg(dmg, mountpoint):
         app = mountpoint / "Google Chrome.app"
         if app.is_symlink():
             raise PreparationError(f"Unexpected symlink app in {dmg}")
+        # A read-only mounted Chrome DMG may expose FinderInfo/resource-fork
+        # xattrs that make codesign --verify --deep --strict fail.  Never
+        # remove metadata from the mounted source.  Verify the official
+        # signature only on a cleaned ditto --norsrc *copy* below.
         checked_app(app)
-        verify_official_google_app(app)
         yield app
     finally:
         if mounted:
@@ -210,12 +213,27 @@ def prepare(*, check_only=False):
             if hashlib.sha256(stage_binary.read_bytes()).hexdigest() != digest:
                 raise PreparationError("Clone differs from signed DMG")
             strip_codesign_detritus_from_copy(stage)
+            # Same successful order as patch_chrome.py: clone, clean
+            # metadata, then verify the original Google signature.
             verify_official_google_app(stage)
+
+            # Also authenticate the Chrome 151 donor on a clean private
+            # copy.  Verification on the read-only donor DMG itself can
+            # fail due to Finder/resource-fork metadata.
+            donor_copy = working / "Google Chrome 151 donor.app"
+            command(["/usr/bin/ditto", "--norsrc",
+                     str(donor), str(donor_copy)])
+            _, donor_copy_major, donor_copy_version, donor_copy_fw, _ = checked_app(donor_copy)
+            if donor_copy_major != 151 or donor_copy_version != donor_version:
+                raise PreparationError("Chrome 151 donor copy changed version")
+            strip_codesign_detritus_from_copy(donor_copy)
+            verify_official_google_app(donor_copy)
+
             stage_binary.write_bytes(modified)
             staged_libs = stage_binary.parent / "Libraries"
             staged_libs.mkdir(exist_ok=True)
             for lib in LIBS:
-                donor_lib = donor_fw / "Libraries" / lib
+                donor_lib = donor_copy_fw / "Libraries" / lib
                 if not donor_lib.is_file():
                     raise PreparationError(f"Missing ANGLE library in DMG: {lib}")
                 copy_angle_without_flags(donor_lib, staged_libs / lib)
