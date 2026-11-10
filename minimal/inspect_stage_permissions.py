@@ -41,13 +41,27 @@ def inspect_stage(app):
     versions = app / "Contents/Frameworks/Google Chrome Framework.framework/Versions"
     # Current is a symlink to the canonical version directory; inspect both.
     current = versions / "Current"
-    if not current.is_dir():
-        raise ValueError(f"Chrome framework version missing: {current}")
-    libs = current / "Libraries"
+    if current.is_dir():
+        version_dir = current
+    else:
+        # shutil.rmtree() may already have removed the Current symlink
+        # before it hit a protected file within the version directory.
+        candidates = sorted(p for p in versions.iterdir()
+                            if p.is_dir() and not p.is_symlink()
+                            and p.name[:1].isdigit())
+        if len(candidates) != 1:
+            raise ValueError(
+                f"Current symlink missing and cannot choose one version "
+                f"directory safely: {versions} ({len(candidates)} candidates)"
+            )
+        version_dir = candidates[0]
+        print(f"NOTE: Current symlink is missing after partial cleanup; "
+              f"inspecting real directory {version_dir.name}")
+    libs = version_dir / "Libraries"
     for path in (
         app.parent,
         versions,
-        current,
+        version_dir,
         libs,
         libs / "libEGL.dylib",
         libs / "libGLESv2.dylib",
