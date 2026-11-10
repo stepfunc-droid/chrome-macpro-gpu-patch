@@ -23,6 +23,20 @@ class StagePermissionsTests(unittest.TestCase):
             self.assertEqual(inspect.call_args_list[-1].args[0],
                              ver / "Current/Libraries/libGLESv2.dylib")
 
+    def test_partially_removed_current_symlink(self):
+        with tempfile.TemporaryDirectory() as d:
+            stage = Path(d) / ".chrome-gl-test-partial"
+            app = stage / "Google Chrome.app"
+            ver = app / "Contents/Frameworks/Google Chrome Framework.framework/Versions"
+            actual = ver / "157.0.8103.51"
+            (actual / "Libraries").mkdir(parents=True)
+            # Cleanup may have removed Versions/Current before its first error.
+            with mock.patch("inspect_stage_permissions.inspect_path") as inspect:
+                inspect_stage(app)
+            self.assertEqual(inspect.call_count, 6)
+            self.assertEqual(inspect.call_args_list[-1].args[0],
+                             actual / "Libraries/libGLESv2.dylib")
+
     def test_rejects_non_staging_app(self):
         with tempfile.TemporaryDirectory() as d:
             app = Path(d) / "Google Chrome.app"
