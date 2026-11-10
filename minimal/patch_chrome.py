@@ -20,6 +20,9 @@ import tempfile
 import traceback
 
 from signing import sign_test_copy, SigningError
+from full_graphics_m157 import (
+    apply_graphics_compat_m157, GraphicsCompatError, GPU_FLAGS
+)
 
 GL_ALLOWED_ORIG = bytes.fromhex("84 c0 74 0f 80 7d b8 00 74 cd 48 8b 45 b0")
 GL_ALLOWED_PATCHED = bytes.fromhex("84 c0 90 90 80 7d b8 00 74 cd 48 8b 45 b0")
@@ -196,7 +199,7 @@ def apply_gpu_mode_experiment_m157(original, patched):
     return M157_P3_OFFSET
 
 
-def plan_binary_patch(original, *, gpu_mode_experiment=False):
+def plan_binary_patch(original, *, gpu_mode_experiment=False, full_graphics_compat=False):
     """Return patched bytes and offset report, refusing ambiguous matches."""
     data = bytearray(original)
     positions = occurrences(data, GL_ALLOWED_ORIG)
@@ -237,9 +240,15 @@ def plan_binary_patch(original, *, gpu_mode_experiment=False):
     # JNE rel32 is six bytes; JMP rel32 is five. Preserve the original target.
     data[p2:p2 + 6] = b"\xe9" + struct.pack("<i", displacement + 1) + b"\x90"
     report = {"allowed_gl_jump": p1, "display_init_jump": p2}
-    if gpu_mode_experiment:
+    if gpu_mode_experiment or full_graphics_compat:
         report["experimental_gl_mode_branch"] = apply_gpu_mode_experiment_m157(
             original, data)
+    if full_graphics_compat:
+        # P4 is NOT applied: this is P1/P2/P3 + P5/P6/P7, with an
+        # explicit IOSurface validation bypass (P6). All-or-nothing.
+        combined, extra = apply_graphics_compat_m157(original, data)
+        report.update(extra)
+        data = bytearray(combined)
     assert len(data) == len(original)
     return bytes(data), report
 
@@ -309,7 +318,8 @@ def verify_official_google_app(app):
         raise PatchError(f"Not signed by the official Google Chrome Team ID: {app}")
 
 
-def preflight(source, angle, output, experimental, gpu_mode_experiment=False):
+def preflight(source, angle, output, experimental, gpu_mode_experiment=False,
+              full_graphics_compat=False):
     source, major, version, _, binary = checked_app(source)
     angle, angle_major, angle_version, angle_fw, _ = checked_app(angle)
     home = Path.home().resolve()
@@ -336,7 +346,8 @@ def preflight(source, angle, output, experimental, gpu_mode_experiment=False):
         lib_paths.append(p)
     original = binary.read_bytes()
     modified, report = plan_binary_patch(
-        original, gpu_mode_experiment=gpu_mode_experiment)
+        original, gpu_mode_experiment=gpu_mode_experiment,
+        full_graphics_compat=full_graphics_compat)
     if modified == original:
         raise PatchError("No binary modification produced")
     return source, version, output, original, modified, report, lib_paths
@@ -354,6 +365,9 @@ def main(argv=None):
     parser.add_argument("--experimental-gpu-mode", action="store_true",
                         help="M157 exact-SHA experiment: permit HARDWARE_GL fallback candidate "
                              "(does NOT bypass Sandbox, IOSurface checks or crash fallback)")
+    parser.add_argument("--full-graphics-compat", action="store_true",
+                        help="Exact-M157 P1/P2/P3/P5/P6/P7 experiment, no P4 sandbox "
+                             "bypass (P6 skips IOSurface target validation)")
     parser.add_argument("--apply", action="store_true", help="Actually create and re-sign the test copy")
     parser.add_argument("--debug", action="store_true", help="Show full traceback if staged-copy operations fail")
     args = parser.parse_args(argv)
@@ -371,8 +385,11 @@ def main(argv=None):
             for line in inspect_binary_patterns(original):
                 print(line)
             return 0
-        if args.experimental_gpu_mode and not args.experimental_version:
-            raise PatchError("--experimental-gpu-mode requires --experimental-version")
+        if args.experimental_gpu_mode and args.full_graphics_compat:
+            raise PatchError("Choose either --experimental-gpu-mode or "
+                             "--full-graphics-compat, not both")
+        if (args.experimental_gpu_mode or args.full_graphics_compat) and not args.experimental_version:
+            raise PatchError("Experimental GPU modes require --experimental-version")
         if not args.angle_from:
             raise PatchError("--angle-from is required unless --diagnose is used")
         if args.apply and sys.platform != "darwin":
@@ -381,12 +398,18 @@ def main(argv=None):
             raise PatchError("Do not run this script as root or with sudo")
         source, version, output, original, modified, report, libs = preflight(
             args.source, args.angle_from, args.output, args.experimental_version,
-            args.experimental_gpu_mode)
+            args.experimental_gpu_mode, args.full_graphics_compat)
         print(f"Chrome version: {version}; input SHA256: {sha256(original)}")
         for name, offset in report.items():
             print(f"  {name}: 0x{offset:x}")
         print("ANGLE donor files:", ", ".join(str(p) for p in libs))
-        if args.experimental_gpu_mode:
+        if args.full_graphics_compat:
+            print("FULL GRAPHICS EXPERIMENT: P1/P2/P3/P5/P6/P7. "
+                  "P4 Seatbelt bypass is EXCLUDED.")
+            print("WARNING: P6 bypasses IOSurface texture target validation. "
+                  "Do not use this test browser for sensitive accounts.")
+            print("Unchanged: GPU sandbox/Seatbelt checks, crash fallback, launcher.")
+        elif args.experimental_gpu_mode:
             print("EXPERIMENT: Adds a HARDWARE_GL candidate in Chromium GPU mode "
                   "selection for this exact M157 build.")
             print("Unchanged: GPU sandbox, IOSurface validation, mode fallback, launcher.")
@@ -417,7 +440,7 @@ def main(argv=None):
             # A damaged vendor signature must still fail, not be ignored.
             phase = "verify staged Google signature"
             verify_official_google_app(stage)
-            phase = "write two framework byte patches"
+            phase = "write validated framework byte patches"
             copied_binary.write_bytes(modified)
             dest_libdir = copied_fw / "Libraries"
             phase = "check staged Libraries directory"
@@ -448,14 +471,21 @@ def main(argv=None):
                       "before deleting it manually (never use sudo blindly).", file=sys.stderr)
         print(f"Created: {output}")
         exe = output / "Contents/MacOS/Google Chrome"
-        profile = output.parent / ("Chrome-GPU-Mode-Profile" if
-                                   args.experimental_gpu_mode else "Chrome-GPU-Test-Profile")
+        profile = output.parent / (
+            "Chrome-GPU-Full-Compat-Profile" if args.full_graphics_compat else
+            "Chrome-GPU-Mode-Profile" if args.experimental_gpu_mode else
+            "Chrome-GPU-Test-Profile"
+        )
         print("Test with a disposable profile (do NOT log in to important accounts):")
-        print(f'  "{exe}" --user-data-dir="{profile}" --use-angle=gl --ignore-gpu-blocklist --no-first-run')
+        if args.full_graphics_compat:
+            flags = " \\\n    ".join(GPU_FLAGS)
+            print(f'  "{exe}" --user-data-dir="{profile}" \\\n    {flags} \\\n    --no-first-run')
+        else:
+            print(f'  "{exe}" --user-data-dir="{profile}" --use-angle=gl --ignore-gpu-blocklist --no-first-run')
         print("Check chrome://gpu. A successful signature does NOT prove GPU acceleration.")
         print("To uninstall, close the test browser and delete only the test .app and profile.")
         return 0
-    except (PatchError, SigningError, OSError, ValueError, subprocess.SubprocessError) as exc:
+    except (PatchError, SigningError, GraphicsCompatError, OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"ERROR in phase [{phase}]: {type(exc).__name__}: {exc}", file=sys.stderr)
         if args.debug:
             traceback.print_exc()
