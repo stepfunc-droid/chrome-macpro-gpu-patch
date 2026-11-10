@@ -422,6 +422,9 @@ def main(argv=None):
     parser.add_argument("--full-graphics-compat", action="store_true",
                         help="Exact-M157 P1/P2/P3/P5/P6/P7 experiment, no P4 sandbox "
                              "bypass (P6 skips IOSurface target validation)")
+    parser.add_argument("--inject-launcher", action="store_true",
+                        help="Compile the repo's native flag-injecting Chrome launcher "
+                             "IN THE TEST COPY before signing (only --full-graphics-compat)")
     parser.add_argument("--apply", action="store_true", help="Actually create and re-sign the test copy")
     parser.add_argument("--debug", action="store_true", help="Show full traceback if staged-copy operations fail")
     args = parser.parse_args(argv)
@@ -445,6 +448,8 @@ def main(argv=None):
             for line in inspect_binary_patterns(original):
                 print(line)
             return 0
+        if args.inject_launcher and not args.full_graphics_compat:
+            raise PatchError("--inject-launcher requires --full-graphics-compat")
         if args.experimental_gpu_mode and args.full_graphics_compat:
             raise PatchError("Choose either --experimental-gpu-mode or "
                              "--full-graphics-compat, not both")
@@ -509,6 +514,19 @@ def main(argv=None):
             for donor in libs:
                 phase = f"copy ANGLE library {donor.name} without BSD flags"
                 copy_angle_without_flags(donor, dest_libdir / donor.name)
+            if args.inject_launcher:
+                # Compile the upstream-style launcher into the isolated staging
+                # app, then sign it as part of the final app. It injects only
+                # GPU_FLAGS, not --no-sandbox, and does not install any service.
+                phase = "compile native GPU-flag launcher in staged app"
+                launcher_src = Path(__file__).resolve().parent.parent / "chrome_main.c"
+                if not launcher_src.is_file():
+                    raise PatchError(f"Launcher source missing: {launcher_src}")
+                launcher_dst = stage / "Contents/MacOS/Google Chrome"
+                if not launcher_dst.is_file() or launcher_dst.is_symlink():
+                    raise PatchError("Unexpected launcher destination")
+                cmd(["/usr/bin/clang", "-O2", "-Wall", "-Wextra",
+                     str(launcher_src), "-o", str(launcher_dst)])
             # Ad-hoc signing changes the browser identity. Never preserve
             # Google-only Team ID/keychain entitlements in locally signed code.
             # Sign library/framework/helper/outer app separately per Chromium.
