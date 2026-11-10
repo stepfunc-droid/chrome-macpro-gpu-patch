@@ -121,7 +121,7 @@ def shell_script(app_name, version, signed_framework_hash=None):
     lines.extend([
         'exec "$BIN" \\',
         f'  --user-data-dir="$HOME/Downloads/Chrome-GPU-{version}-Profile" \\',
-    ]
+    ])
     for flag in GPU_FLAGS:
         lines.append("  " + shlex.quote(flag) + " \\")
     lines.extend([
