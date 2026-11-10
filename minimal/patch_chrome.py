@@ -107,10 +107,23 @@ def plan_binary_patch(original):
         raise PatchError("Unexpected OpenGL conditional jump")
     data[p1:p1 + 2] = b"\x90\x90"
 
-    found = [m for pat in DISPLAY_PATTERNS for m in pat.finditer(data)]
-    if len(found) != 1:
-        raise PatchError("Display initialization check not unique or absent; unsupported Chrome build")
-    m = found[0]
+    # These are alternatives, NOT two independent targets. On Chromium M157,
+    # the specific ANGLE movabs pattern and the broader legacy stack-compare
+    # pattern each match once in *different* functions. Summing both causes a
+    # false "ambiguous" error. Prefer the more contextual movabs signature.
+    primary = list(DISPLAY_PATTERNS[0].finditer(data))
+    if len(primary) > 1:
+        raise PatchError("Specific ANGLE display check has multiple matches; refusing to guess")
+    if primary:
+        m = primary[0]
+    else:
+        fallback = list(DISPLAY_PATTERNS[1].finditer(data))
+        if len(fallback) != 1:
+            raise PatchError(
+                "Specific ANGLE display check absent and legacy fallback is "
+                "not unique; unsupported Chrome build"
+            )
+        m = fallback[0]
     p2 = m.start() + 2
     displacement = struct.unpack("<i", m.group("disp"))[0]
     # JNE rel32 is six bytes; JMP rel32 is five. Preserve the original target.
