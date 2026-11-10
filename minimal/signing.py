@@ -70,7 +70,9 @@ def sign_test_copy(app):
     The caller MUST pass a freshly staged test copy, never an installed app.
     Any unknown app/XPC parts fail closed instead of relying on --deep signing.
     """
-    app = Path(app).resolve(strict=True)
+    app = Path(app).resolve(strict=False)
+    if not app.is_dir():
+        raise SigningError(f"Staged test app does not exist: {app}")
     if app.name != "Google Chrome.app" or ".chrome-gl-test-" not in str(app.parent.name):
         raise SigningError("Only a temporary staged Google Chrome.app is eligible for signing")
     fw = app / "Contents/Frameworks/Google Chrome Framework.framework"
