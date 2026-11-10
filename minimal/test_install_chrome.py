@@ -76,10 +76,11 @@ class AdaptiveCompatibilityTests(unittest.TestCase):
 
     def test_shell_contains_full_known_workarounds(self):
         script = prepare_chrome.shell_script(
-            "Chrome GPU 158.0.8000.12.app", "158.0.8000.12")
+            "Google Chrome.app", "158.0.8000.12")
         self.assertIn('SCRIPT_DIR=', script)
         self.assertIn('exec "$BIN"', script)
-        self.assertIn('Chrome GPU 158.0.8000.12.app', script)
+        self.assertIn('Google Chrome.app', script)
+        self.assertNotIn('Chrome GPU 158.0.8000.12.app', script)
         for flag in GPU_FLAGS:
             self.assertIn(flag, script)
         self.assertNotIn("--no-sandbox", script)
