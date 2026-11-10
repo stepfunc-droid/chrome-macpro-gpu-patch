@@ -9,7 +9,10 @@ from unittest import mock
 
 from patch_chrome import (GL_ALLOWED_ORIG, PatchError, inspect_binary_patterns,
                           plan_binary_patch, strip_codesign_detritus_from_copy,
-                          copy_angle_without_flags)
+                          copy_angle_without_flags, M157_P3_ORIGINAL,
+                          M157_P3_BRANCH_OFFSET, M157_P3_ENUM_OFFSET,
+                          patch_gpu_mode_branch_m157,
+                          apply_gpu_mode_experiment_m157)
 
 
 def fixture(displacement=0x606):
@@ -145,6 +148,44 @@ class BinaryPatchTests(unittest.TestCase):
             with self.assertRaises(PatchError):
                 copy_angle_without_flags(src, dest)
             self.assertEqual(outside.read_bytes(), b"outside")
+
+    def test_gpu_mode_experiment_patches_only_branch_and_enum(self):
+        # The candidate sequence comes from the user's exact M157 binary.
+        # This is NOT a GPU-hardware functional test.
+        original = bytes.fromhex("cc cc") + M157_P3_ORIGINAL + bytes.fromhex("cc cc")
+        modified = bytearray(original)
+        patch_gpu_mode_branch_m157(modified, 2)
+        branch = 2 + M157_P3_BRANCH_OFFSET
+        enum = 2 + M157_P3_ENUM_OFFSET
+        self.assertEqual(modified[branch:branch + 6], b"\\x90" * 6)
+        self.assertEqual(modified[enum], 1)
+        self.assertEqual(modified[:2], original[:2])
+        self.assertEqual(modified[-2:], original[-2:])
+        differences = {i for i, (a, b) in enumerate(zip(original, modified)) if a != b}
+        self.assertTrue(differences.issubset(set(range(branch, branch+6)) | {enum}))
+        self.assertIn(enum, differences)
+        self.assertEqual(len(modified), len(original))
+
+    def test_gpu_mode_experiment_refuses_other_build(self):
+        sample = fixture() + M157_P3_ORIGINAL
+        with self.assertRaisesRegex(PatchError, "only supported on exact audited"):
+            plan_binary_patch(sample, gpu_mode_experiment=True)
+        self.assertEqual(sample, fixture() + M157_P3_ORIGINAL)
+
+    def test_gpu_mode_branch_rejects_wrong_instruction(self):
+        data = bytearray(M157_P3_ORIGINAL)
+        data[19] = 4
+        before = bytes(data)
+        with self.assertRaisesRegex(PatchError, "instructions differ"):
+            patch_gpu_mode_branch_m157(data, 0)
+        self.assertEqual(data, before)
+
+    def test_gpu_mode_rejects_unsupported_size_even_if_hash_mocked(self):
+        with mock.patch("patch_chrome.sha256", return_value=
+                        "81fc51a5952b527f5cd8e9549107effde2f0d4655f75aab75bcfbebae7f6793b"):
+            with self.assertRaises(PatchError):
+                apply_gpu_mode_experiment_m157(M157_P3_ORIGINAL,
+                                              bytearray(M157_P3_ORIGINAL))
 
     def test_diagnostic_reports_missing_display_match(self):
         report = "\n".join(inspect_binary_patterns(GL_ALLOWED_ORIG + b"\x00" * 64))
