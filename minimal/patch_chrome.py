@@ -525,8 +525,12 @@ def main(argv=None):
                 launcher_dst = stage / "Contents/MacOS/Google Chrome"
                 if not launcher_dst.is_file() or launcher_dst.is_symlink():
                     raise PatchError("Unexpected launcher destination")
+                launcher_new = launcher_dst.with_name("Google Chrome.new")
                 cmd(["/usr/bin/clang", "-O2", "-Wall", "-Wextra",
-                     str(launcher_src), "-o", str(launcher_dst)])
+                     str(launcher_src), "-o", str(launcher_new)])
+                # Atomic replacement, not in-place mutation of a vendor
+                # binary that may carry immutable flags.
+                os.replace(launcher_new, launcher_dst)
             # Ad-hoc signing changes the browser identity. Never preserve
             # Google-only Team ID/keychain entitlements in locally signed code.
             # Sign library/framework/helper/outer app separately per Chromium.
