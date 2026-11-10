@@ -93,11 +93,15 @@ def sign_test_copy(app):
         if set(plistlib.loads(main_plist.read_bytes())) & set(BRANDED_KEYS):
             raise SigningError("Branded Google entitlement unexpectedly present")
 
-        # 1. Embedded dylibs; no process entitlements on libraries.
-        libraries = sorted(p for p in libs.iterdir() if p.is_file() and p.suffix == ".dylib")
-        if not libraries:
-            raise SigningError("No ANGLE/Chrome libraries found to sign")
+        # 1. Only the two ANGLE dylibs intentionally replaced in the staged
+        # copy require re-signing. Do NOT enumerate Libraries: the original
+        # Google Chrome M157 bundle can deny directory enumeration on macOS.
+        # Leave other original, unmodified Google-signed dylibs untouched.
+        libraries = [libs / "libEGL.dylib", libs / "libGLESv2.dylib"]
         for library in libraries:
+            if not library.is_file():
+                raise SigningError(f"Expected staged ANGLE library missing: {library}")
+            print(f"[*] Signing staged ANGLE library: {library.name}", flush=True)
             sign(library)
 
         # 2. Helper applications, signing JIT roles separately from generic roles.
