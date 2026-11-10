@@ -19,7 +19,7 @@ drivers. It does **not** patch your everyday Chrome installation.
   the ANGLE libraries must be supplied from your *own genuine Chrome 151*
   app bundle. They may still be ABI-incompatible with newer Chrome versions.
 - Only operates on a new, explicitly named output app **under your home**.
-  It checks for a clean input signature, refuses ambiguous byte patterns,
+  It checks the clean inputs' signatures and Google's Team ID (EQHXZ8M8AV), refuses ambiguous byte patterns,
   and verifies that signing succeeds before publishing the new copy.
 
 **Caveat:** It is not possible to modify Chrome's signed framework without
@@ -27,6 +27,13 @@ changing its code identity. The test copy is signed **ad-hoc**, not by Google;
 this can affect Chrome Safe Storage, Keychain access, browser updates,
 privacy permissions, and other signature-bound behavior. **Do not sign in
 to banking, exchanges, or other sensitive sites with this test build.**
+Google's Chromium signing documentation warns that locally signed Chrome-branded
+builds can fail because official Chrome entitlements are identity-bound and
+self-signed identities conflict with library validation. This experiment
+**does not bypass library validation**; it may fail to launch even after
+code-signature verification succeeds. See:
+https://chromium.googlesource.com/chromium/src/+/main/chrome/installer/mac/signing/README.md
+
 Do not copy your real Chrome profile into the test build. The main goal
 of this first version is to see whether a GPU process can start without
 removing a sandbox assertion.
