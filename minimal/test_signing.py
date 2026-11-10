@@ -17,6 +17,7 @@ def fake_app(root):
     ver = fw / "Versions/157.0.8103.51"
     (ver / "Libraries").mkdir(parents=True)
     (ver / "Libraries/libEGL.dylib").write_bytes(b"TEST")
+    (ver / "Libraries/libGLESv2.dylib").write_bytes(b"TEST")
     helpers = ver / "Helpers"
     helpers.mkdir()
     for name in ("Google Chrome Helper.app", "Google Chrome Helper (GPU).app",
@@ -53,7 +54,7 @@ class SigningTests(unittest.TestCase):
                 sign_test_copy(app)
                 run.assert_called_once()
             names = [Path(x[0]).name for x in calls]
-            self.assertEqual(names[0], "libEGL.dylib")
+            self.assertEqual(names[:2], ["libEGL.dylib", "libGLESv2.dylib"])
             self.assertEqual(names[-2:], ["Google Chrome Framework.framework", "Google Chrome.app"])
             self.assertIn("Google Chrome Helper (GPU).app", names)
             self.assertIn("Google Chrome Helper (Renderer).app", names)
@@ -64,6 +65,24 @@ class SigningTests(unittest.TestCase):
             self.assertEqual(content["Google Chrome Helper (Renderer).app"],
                              {JIT_ENTITLEMENT: True})
             self.assertFalse(set(content["Google Chrome.app"]) & set(BRANDED_KEYS))
+
+    def test_signing_does_not_enumerate_libraries(self):
+        with tempfile.TemporaryDirectory() as root:
+            app = fake_app(root)
+            libs = (app / "Contents/Frameworks/Google Chrome Framework.framework"
+                    / "Versions/Current/Libraries")
+            original_iterdir = Path.iterdir
+
+            def refuse_library_enumeration(path):
+                if str(path) == str(libs):
+                    raise PermissionError(1, "Operation not permitted", str(path))
+                return original_iterdir(path)
+
+            with mock.patch("signing.sign"), mock.patch("signing.run"), \
+                 mock.patch.object(Path, "iterdir", autospec=True,
+                                   side_effect=refuse_library_enumeration):
+                # Should not enumerate an OS-protected Libraries directory.
+                sign_test_copy(app)
 
     def test_refuses_unstaged_app(self):
         with tempfile.TemporaryDirectory() as root:
