@@ -263,8 +263,16 @@ def verify_full_graphics_output(app_path):
     if version != "157.0.8103.51":
         raise PatchError(f"Expected Chrome 157.0.8103.51, found {version}")
     data = binary.read_bytes()
-    if len(data) != 531436704:
-        raise PatchError(f"Unexpected framework size {len(data)}")
+    # A locally re-signed Mach-O may have a different LC_CODE_SIGNATURE
+    # blob length than the Google-signed original. The original input
+    # length/hash precondition belongs ONLY to the pre-patch preflight;
+    # verify a generated copy by specific modified instructions instead.
+    # Reject truncated binaries where the last known patch span is missing.
+    last_patch_end = max(offset + len(new) for _, offset, _, new in PATCHES)
+    if len(data) < last_patch_end:
+        raise PatchError(
+            f"Framework truncated before known patch regions: size={len(data)}"
+        )
     p1 = occurrences(data, GL_ALLOWED_PATCHED)
     p2 = list(re.finditer(
         rb"\x84\xc0\xe9.{4}\x90\x48\xb8\x09\x00\x00\x00\x03\x00",
@@ -284,6 +292,7 @@ def verify_full_graphics_output(app_path):
                       data[offset:offset + len(new)] == new,
                       f"offset=0x{offset:x}"))
     print(f"Read-only verification of {app}")
+    print(f"Framework size (re-signed): {len(data)} bytes")
     print(f"Framework SHA256 (patched): {sha256(data)}")
     for name, ok, detail in tests:
         print(f"  {'OK' if ok else 'FAIL'}  {name}: {detail}")
