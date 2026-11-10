@@ -32,6 +32,17 @@ DISPLAY_PATTERNS = (
     re.compile(rb"\x84\xc0\x0f\x85(?P<disp>.{4})\x83\x7d.\x00\x0f\x85", re.DOTALL),
 )
 LIBS = ("libEGL.dylib", "libGLESv2.dylib")
+# Exact Google Chrome 157.0.8103.51 x86_64 binary reported from the MacBook
+# Pro 11,3 test machine. This is not a general M157/M158 patch signature.
+M157_AUDITED_SHA256 = "81fc51a5952b527f5cd8e9549107effde2f0d4655f75aab75bcfbebae7f6793b"
+M157_P3_OFFSET = 0x1FA5846
+M157_P3_ORIGINAL = bytes.fromhex(
+    "84 c0 0f 84 9b 00 00 00 4c 89 ff e8 ca d5 01 01"
+    "c7 45 ac 03 00 00 00 48 8b 83 40 07 00 00"
+)
+M157_P3_BRANCH_OFFSET = 2
+M157_P3_ENUM_OFFSET = 19
+
 
 
 class PatchError(Exception):
@@ -152,7 +163,40 @@ def inspect_binary_patterns(original):
     return report
 
 
-def plan_binary_patch(original):
+def patch_gpu_mode_branch_m157(data, offset):
+    """Experimental GPU mode candidate: bypass Graphite gate, write GL enum.
+
+    M157 enum value 3 is HARDWARE_GRAPHITE, not DISABLED. The original
+    branch guards adding a Graphite candidate. Bypassing that *specific*
+    conditional and changing the pushed enum to 1 (HARDWARE_GL) is a
+    hypothesis for restoring the GL candidate, not a proven GPU fix.
+    It does not disable Chromium's fallback or alter sandbox/IOSurface code.
+    """
+    if data[offset:offset + len(M157_P3_ORIGINAL)] != M157_P3_ORIGINAL:
+        raise PatchError("M157 GPU mode instructions differ from audited bytes")
+    data[offset + M157_P3_BRANCH_OFFSET:
+         offset + M157_P3_BRANCH_OFFSET + 6] = b"\x90" * 6
+    data[offset + M157_P3_ENUM_OFFSET] = 1
+
+
+def apply_gpu_mode_experiment_m157(original, patched):
+    """Fail closed unless the *entire input binary* is the audited M157 build."""
+    if len(original) != 531436704 or sha256(original) != M157_AUDITED_SHA256:
+        raise PatchError(
+            "GPU mode experiment is only supported on exact audited "
+            "Chrome 157.0.8103.51 binary SHA256 "
+            + M157_AUDITED_SHA256
+        )
+    hits = occurrences(original, M157_P3_ORIGINAL)
+    if hits != [M157_P3_OFFSET]:
+        raise PatchError(
+            f"GPU mode bytes not unique at audited file offset; found: {hits[:5]}"
+        )
+    patch_gpu_mode_branch_m157(patched, M157_P3_OFFSET)
+    return M157_P3_OFFSET
+
+
+def plan_binary_patch(original, *, gpu_mode_experiment=False):
     """Return patched bytes and offset report, refusing ambiguous matches."""
     data = bytearray(original)
     positions = occurrences(data, GL_ALLOWED_ORIG)
@@ -192,8 +236,12 @@ def plan_binary_patch(original):
     displacement = struct.unpack("<i", m.group("disp"))[0]
     # JNE rel32 is six bytes; JMP rel32 is five. Preserve the original target.
     data[p2:p2 + 6] = b"\xe9" + struct.pack("<i", displacement + 1) + b"\x90"
+    report = {"allowed_gl_jump": p1, "display_init_jump": p2}
+    if gpu_mode_experiment:
+        report["experimental_gl_mode_branch"] = apply_gpu_mode_experiment_m157(
+            original, data)
     assert len(data) == len(original)
-    return bytes(data), {"allowed_gl_jump": p1, "display_init_jump": p2}
+    return bytes(data), report
 
 
 def under(path, directory):
@@ -261,7 +309,7 @@ def verify_official_google_app(app):
         raise PatchError(f"Not signed by the official Google Chrome Team ID: {app}")
 
 
-def preflight(source, angle, output, experimental):
+def preflight(source, angle, output, experimental, gpu_mode_experiment=False):
     source, major, version, _, binary = checked_app(source)
     angle, angle_major, angle_version, angle_fw, _ = checked_app(angle)
     home = Path.home().resolve()
@@ -287,7 +335,8 @@ def preflight(source, angle, output, experimental):
             raise PatchError(f"Donor Chrome {angle_version} is missing {p}")
         lib_paths.append(p)
     original = binary.read_bytes()
-    modified, report = plan_binary_patch(original)
+    modified, report = plan_binary_patch(
+        original, gpu_mode_experiment=gpu_mode_experiment)
     if modified == original:
         raise PatchError("No binary modification produced")
     return source, version, output, original, modified, report, lib_paths
@@ -302,6 +351,9 @@ def main(argv=None):
                         help="NEW test copy, under your home (default: ~/Downloads/Chrome GPU Test.app)")
     parser.add_argument("--experimental-version", action="store_true",
                         help="Allow unvalidated milestone (e.g. M157), if byte signatures match exactly")
+    parser.add_argument("--experimental-gpu-mode", action="store_true",
+                        help="M157 exact-SHA experiment: permit HARDWARE_GL fallback candidate "
+                             "(does NOT bypass Sandbox, IOSurface checks or crash fallback)")
     parser.add_argument("--apply", action="store_true", help="Actually create and re-sign the test copy")
     parser.add_argument("--debug", action="store_true", help="Show full traceback if staged-copy operations fail")
     args = parser.parse_args(argv)
@@ -319,6 +371,8 @@ def main(argv=None):
             for line in inspect_binary_patterns(original):
                 print(line)
             return 0
+        if args.experimental_gpu_mode and not args.experimental_version:
+            raise PatchError("--experimental-gpu-mode requires --experimental-version")
         if not args.angle_from:
             raise PatchError("--angle-from is required unless --diagnose is used")
         if args.apply and sys.platform != "darwin":
@@ -326,12 +380,18 @@ def main(argv=None):
         if args.apply and os.geteuid() == 0:
             raise PatchError("Do not run this script as root or with sudo")
         source, version, output, original, modified, report, libs = preflight(
-            args.source, args.angle_from, args.output, args.experimental_version)
+            args.source, args.angle_from, args.output, args.experimental_version,
+            args.experimental_gpu_mode)
         print(f"Chrome version: {version}; input SHA256: {sha256(original)}")
         for name, offset in report.items():
             print(f"  {name}: 0x{offset:x}")
         print("ANGLE donor files:", ", ".join(str(p) for p in libs))
-        print("Unchanged: GPU sandbox, IOSurface validation, GPU fallback mode, launcher.")
+        if args.experimental_gpu_mode:
+            print("EXPERIMENT: Adds a HARDWARE_GL candidate in Chromium GPU mode "
+                  "selection for this exact M157 build.")
+            print("Unchanged: GPU sandbox, IOSurface validation, mode fallback, launcher.")
+        else:
+            print("Unchanged: GPU sandbox, IOSurface validation, GPU mode, launcher.")
         print("No automatic updates, no downloaded libraries, no existing app modification.")
         if not args.apply:
             print("DRY RUN ONLY; pass --apply to create the test copy.")
@@ -388,7 +448,8 @@ def main(argv=None):
                       "before deleting it manually (never use sudo blindly).", file=sys.stderr)
         print(f"Created: {output}")
         exe = output / "Contents/MacOS/Google Chrome"
-        profile = output.parent / "Chrome-GPU-Test-Profile"
+        profile = output.parent / ("Chrome-GPU-Mode-Profile" if
+                                   args.experimental_gpu_mode else "Chrome-GPU-Test-Profile")
         print("Test with a disposable profile (do NOT log in to important accounts):")
         print(f'  "{exe}" --user-data-dir="{profile}" --use-angle=gl --ignore-gpu-blocklist --no-first-run')
         print("Check chrome://gpu. A successful signature does NOT prove GPU acceleration.")
