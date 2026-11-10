@@ -27,11 +27,15 @@ changing its code identity. The test copy is signed **ad-hoc**, not by Google;
 this can affect Chrome Safe Storage, Keychain access, browser updates,
 privacy permissions, and other signature-bound behavior. **Do not sign in
 to banking, exchanges, or other sensitive sites with this test build.**
-Google's Chromium signing documentation warns that locally signed Chrome-branded
-builds can fail because official Chrome entitlements are identity-bound and
-self-signed identities conflict with library validation. This experiment
-**does not bypass library validation**; it may fail to launch even after
-code-signature verification succeeds. See:
+The first implementation mistakenly used `codesign --deep --preserve-metadata`,
+which retained Google Team ID entitlements on ad-hoc-signed code. A real
+M157 test copy failed with `CODESIGNING: Taskgated Invalid Signature`.
+Now `minimal/signing.py` signs known nested components inside-out with
+Chromium's unbranded main-app capabilities and the JIT entitlement only
+for Renderer/GPU helpers. It does not preserve Google-specific app identifiers
+or Keychain groups. **It does not disable library validation** and can still
+fail to launch: Chromium documents that self-signed builds can be
+incompatible with its library validation settings. See:
 https://chromium.googlesource.com/chromium/src/+/main/chrome/installer/mac/signing/README.md
 
 Do not copy your real Chrome profile into the test build. The main goal
@@ -157,6 +161,35 @@ Keychain groups. Chromium's signing docs explain that re-signing a
 Google-branded Chrome build with those entitlements can prevent launch.
 Do not mistake successful `codesign --verify` for launch permission.
 This issue must be diagnosed before any further GPU patch changes.
+
+### Rebuilding after a signature-invalid SIGKILL
+
+If you already have `~/Downloads/Chrome GPU Test.app` created with the
+old signing logic, **do not overwrite it**. Pull the updated branch
+and create a separate output:
+
+```bash
+git pull origin experiment/minimal-chrome-gl
+
+python3 minimal/patch_chrome.py \
+  --source "$HOME/Downloads/Google Chrome.app" \
+  --angle-from "/Applications/Google Chrome.app" \
+  --output "$HOME/Downloads/Chrome GPU Test v2.app" \
+  --experimental-version --apply
+```
+
+Check the new copy with:
+
+```bash
+codesign -d --entitlements :- "$HOME/Downloads/Chrome GPU Test v2.app" 2>/dev/null | plutil -p -
+
+"$HOME/Downloads/Chrome GPU Test v2.app/Contents/MacOS/Google Chrome" --version
+```
+
+The entitlements should **not** include `EQHXZ8M8AV`-prefixed
+Google identity or Keychain group entries. If `--version` exits with
+SIGKILL, use `python3 minimal/inspect_crash.py` and verify that
+`procPath` is the **v2** app, rather than making additional GPU patches.
 
 ### Restore / clean up
 
