@@ -21,7 +21,7 @@ import traceback
 
 from signing import sign_test_copy, SigningError
 from full_graphics_m157 import (
-    apply_graphics_compat_m157, GraphicsCompatError, GPU_FLAGS
+    apply_graphics_compat_m157, GraphicsCompatError, GPU_FLAGS, PATCHES
 )
 
 GL_ALLOWED_ORIG = bytes.fromhex("84 c0 74 0f 80 7d b8 00 74 cd 48 8b 45 b0")
@@ -253,6 +253,48 @@ def plan_binary_patch(original, *, gpu_mode_experiment=False, full_graphics_comp
     return bytes(data), report
 
 
+def verify_full_graphics_output(app_path):
+    """Read-only on-disk verification for M157 graphics experiment.
+
+    This does not assert that an already-running GPU Helper loaded the
+    verified framework. That must be checked using ps/lsof on the Mac.
+    """
+    app, major, version, _, binary = checked_app(app_path)
+    if version != "157.0.8103.51":
+        raise PatchError(f"Expected Chrome 157.0.8103.51, found {version}")
+    data = binary.read_bytes()
+    if len(data) != 531436704:
+        raise PatchError(f"Unexpected framework size {len(data)}")
+    p1 = occurrences(data, GL_ALLOWED_PATCHED)
+    p2 = list(re.finditer(
+        rb"\\x84\\xc0\\xe9.{4}\\x90\\x48\\xb8\\x09\\x00\\x00\\x00\\x03\\x00",
+        data, re.DOTALL))
+    expected_p3 = bytearray(M157_P3_ORIGINAL)
+    patch_gpu_mode_branch_m157(expected_p3, 0)
+    tests = [
+        ("P1 ANGLE allowlist", len(p1) == 1,
+         f"matches={len(p1)}"),
+        ("P2 EGL initialization", len(p2) == 1 and p2[0].start() == 0x3520FF7,
+         f"matches={len(p2)}"),
+        ("P3 HARDWARE_GL mode", data[M157_P3_OFFSET:M157_P3_OFFSET + len(expected_p3)]
+         == bytes(expected_p3), f"offset=0x{M157_P3_OFFSET:x}"),
+    ]
+    for name, offset, old, new in PATCHES:
+        tests.append((name,
+                      data[offset:offset + len(new)] == new,
+                      f"offset=0x{offset:x}"))
+    print(f"Read-only verification of {app}")
+    print(f"Framework SHA256 (patched): {sha256(data)}")
+    for name, ok, detail in tests:
+        print(f"  {'OK' if ok else 'FAIL'}  {name}: {detail}")
+    if not all(ok for _, ok, _ in tests):
+        raise PatchError("Full graphics patch is absent or incomplete")
+    print("All six graphics patch regions verified ON DISK.")
+    print("This does NOT prove the running GPU Helper loaded this binary.")
+    print("To check running test processes:")
+    print("  ps -axo pid,ppid,command | grep -F 'Chrome GPU Test v' | grep -v grep")
+
+
 def under(path, directory):
     try:
         path.relative_to(directory)
@@ -357,6 +399,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, help="Clean, latest official Google Chrome.app")
     parser.add_argument("--diagnose", action="store_true", help="Read-only pattern report; needs only --source")
+    parser.add_argument("--verify-full-graphics", action="store_true",
+                        help="Read-only on-disk verification of P1/P2/P3/P5/P6/P7 "
+                             "on --source test app (never writes)")
     parser.add_argument("--angle-from", help="Clean Google Chrome 151.app with ANGLE libraries")
     parser.add_argument("--output", default="~/Downloads/Chrome GPU Test.app",
                         help="NEW test copy, under your home (default: ~/Downloads/Chrome GPU Test.app)")
@@ -374,6 +419,12 @@ def main(argv=None):
     phase = "preflight"
 
     try:
+        if args.verify_full_graphics:
+            if args.apply or args.diagnose:
+                raise PatchError("--verify-full-graphics is read-only; "
+                                 "cannot combine with --apply or --diagnose")
+            verify_full_graphics_output(args.source)
+            return 0
         if args.diagnose:
             if args.apply:
                 raise PatchError("--diagnose cannot be combined with --apply")
