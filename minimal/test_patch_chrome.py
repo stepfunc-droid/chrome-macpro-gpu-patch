@@ -71,23 +71,51 @@ class BinaryPatchTests(unittest.TestCase):
 
     def test_sanitize_only_disallowed_metadata_in_staged_copy(self):
         stage = "/tmp/private-clone/Google Chrome.app"
-        children = (stage, stage + "/Contents", stage + "/Contents/Info.plist")
-        attrs = [
-            ["com.apple.quarantine", "com.apple.FinderInfo"],
-            ["com.apple.ResourceFork", "com.apple.provenance"],
-            ["com.apple.quarantine"],
-        ]
+        attrs = {
+            stage: "com.apple.quarantine\ncom.apple.FinderInfo\n",
+            stage + "/Contents": "com.apple.ResourceFork\ncom.apple.provenance\n",
+            stage + "/Contents/Info.plist": "com.apple.quarantine\n",
+        }
+        removed = []
+
+        def fake_cmd(arguments):
+            self.assertEqual(arguments[0], "/usr/bin/xattr")
+            if len(arguments) == 2:
+                self.assertIn(arguments[1], attrs)
+                return attrs[arguments[1]]
+            self.assertEqual(arguments[1], "-d")
+            removed.append((arguments[2], arguments[3]))
+            return ""
+
         with mock.patch("patch_chrome.os.walk", return_value=[
             (stage, ["Contents"], ["Contents/Info.plist"])
         ]), mock.patch("patch_chrome.os.path.islink", return_value=False), \
-             mock.patch("patch_chrome.os.listxattr", side_effect=attrs), \
-             mock.patch("patch_chrome.os.removexattr") as remove:
+             mock.patch("patch_chrome.cmd", side_effect=fake_cmd):
             count = strip_codesign_detritus_from_copy(stage)
         self.assertEqual(count, 2)
-        self.assertEqual(remove.call_args_list, [
-            mock.call(stage, "com.apple.FinderInfo"),
-            mock.call(stage + "/Contents", "com.apple.ResourceFork"),
+        self.assertEqual(removed, [
+            ("com.apple.FinderInfo", stage),
+            ("com.apple.ResourceFork", stage + "/Contents"),
         ])
+
+    def test_sanitize_does_not_follow_symlink(self):
+        stage = "/tmp/private-clone/Google Chrome.app"
+        link = stage + "/Contents/alias"
+        called = []
+
+        def fake_cmd(arguments):
+            called.append(arguments)
+            return ""
+
+        with mock.patch("patch_chrome.os.walk", return_value=[
+            (stage, ["Contents"], []),
+            (stage + "/Contents", [], ["alias"]),
+        ]), mock.patch("patch_chrome.os.path.islink",
+                      side_effect=lambda path: path == link), \
+             mock.patch("patch_chrome.cmd", side_effect=fake_cmd):
+            count = strip_codesign_detritus_from_copy(stage)
+        self.assertEqual(count, 0)
+        self.assertNotIn(["/usr/bin/xattr", link], called)
 
     def test_diagnostic_reports_missing_display_match(self):
         report = "\n".join(inspect_binary_patterns(GL_ALLOWED_ORIG + b"\x00" * 64))
