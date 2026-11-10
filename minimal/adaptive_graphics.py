@@ -117,29 +117,33 @@ def scan_and_patch(original, *, version, sha):
     return bytes(data), positions, "STRUCTURAL_ONLY_UNTESTED"
 
 
-def verify_patched_regions(original, staged, *, version, sha):
-    """Require every intended modified byte region to survive code signing.
+def verify_patched_regions(staged_binary, expected_bytes, positions):
+    """Compare six small code regions, not a 500MB whole-binary diff.
 
-    Codesign may resize the signature blob, so original and re-signed binary
-    lengths are *not* compared; only intended code bytes are checked.
+    Signature size may change on re-signing. Every patched instruction
+    position is compared against the bytes planned from the input DMG.
+    The candidate must also pass codesign and an executable smoke test.
     """
-    modified, positions, level = scan_and_patch(
-        original, version=version, sha=sha
-    )
-    if len(staged) < len(modified) - 4096:
-        raise GraphicsCompatError("Signed framework unexpectedly truncated")
-    # Validate every byte change; Apple codesign should only affect the
-    # signature, not the instructions we patched.
-    changes = [i for i, (a, b) in enumerate(zip(original, modified)) if a != b]
-    if not changes:
-        raise GraphicsCompatError("No patch changes identified")
-    for idx in changes:
-        if staged[idx] != modified[idx]:
-            raise GraphicsCompatError(
-                f"Signed candidate lost patch at file offset 0x{idx:x}"
-            )
     if len(positions) != 6:
         raise GraphicsCompatError(
-            f"Expected six patch regions, got {list(positions)}"
+            f"Expected P1/P2/P3/P5/P6/P7, got: {list(positions)}"
         )
-    return positions, level
+    for name, offset in positions.items():
+        if name == "allowed_gl_jump":
+            count = 2
+        elif name == "display_init_jump":
+            count = 6
+        else:
+            count = 80  # covers the entire P3/P5/P6/P7 patch sequence
+        reference = expected_bytes[offset:offset+count]
+        if len(reference) != count:
+            raise GraphicsCompatError(f"{name} patch region truncated")
+        with staged_binary.open("rb") as stream:
+            stream.seek(offset)
+            actual = stream.read(count)
+        if actual != reference:
+            raise GraphicsCompatError(
+                f"{name}: re-signed candidate does not match patched instructions "
+                f"at 0x{offset:x}"
+            )
+    return True
