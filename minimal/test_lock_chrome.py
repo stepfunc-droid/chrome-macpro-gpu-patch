@@ -24,7 +24,9 @@ class LockChromeTests(unittest.TestCase):
         self.app = lock_chrome.APPS_CHROME
 
     def test_wrong_install_path_fails_before_commands(self):
-        with mock.patch.object(lock_chrome, "run") as run:
+        with mock.patch.object(lock_chrome.sys, "platform", "darwin"), \
+             mock.patch.object(lock_chrome.os, "geteuid", return_value=501), \
+             mock.patch.object(lock_chrome, "run") as run:
             with self.assertRaisesRegex(lock_chrome.LockError,
                                         "Only /Applications"):
                 lock_chrome.lock_after_manual_install(app=self.dl,
