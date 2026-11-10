@@ -114,6 +114,15 @@ def cmd(argv):
     return result.stdout
 
 
+def verify_official_google_app(app):
+    """Require a valid app seal AND Google's documented Chrome Team ID."""
+    cmd(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)])
+    result = subprocess.run(["/usr/bin/codesign", "--display", "--verbose=4", str(app)],
+                            text=True, capture_output=True)
+    if result.returncode != 0 or "TeamIdentifier=EQHXZ8M8AV" not in (result.stdout + result.stderr):
+        raise PatchError(f"Not signed by the official Google Chrome Team ID: {app}")
+
+
 def preflight(source, angle, output, experimental):
     source, major, version, _, binary = checked_app(source)
     angle, angle_major, angle_version, angle_fw, _ = checked_app(angle)
@@ -175,7 +184,7 @@ def main(argv=None):
 
         # Fail if source has a bad signature. Donor app must also be intact.
         for app in (source, Path(args.angle_from).expanduser().resolve(strict=True)):
-            cmd(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)])
+            verify_official_google_app(app)
         workdir = Path(tempfile.mkdtemp(prefix=".chrome-gl-test-", dir=str(output.parent)))
         stage = workdir / "Google Chrome.app"
         try:
