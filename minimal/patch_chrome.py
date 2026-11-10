@@ -316,7 +316,15 @@ def main(argv=None):
             phase = "publish staged Chrome test copy"
             stage.rename(output)
         finally:
-            shutil.rmtree(workdir)
+            # Cleanup errors must NEVER mask the original patch/signing error.
+            # Chrome bundles can carry immutable flags or restrictive ACLs.
+            try:
+                shutil.rmtree(workdir)
+            except OSError as cleanup_exc:
+                print(f"[!] Could not fully remove staging directory {workdir}: "
+                      f"{cleanup_exc}", file=sys.stderr)
+                print("[!] Staged files remain; inspect that exact directory "
+                      "before deleting it manually (never use sudo blindly).", file=sys.stderr)
         print(f"Created: {output}")
         exe = output / "Contents/MacOS/Google Chrome"
         profile = output.parent / "Chrome-GPU-Test-Profile"
