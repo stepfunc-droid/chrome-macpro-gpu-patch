@@ -1,134 +1,122 @@
 #!/usr/bin/env python3
-"""Transactional installer tests; simulate filesystem only, no macOS writes."""
+"""New workflow tests: prepare in Downloads, never touch /Applications."""
 from pathlib import Path
-import shutil
+import struct
 import tempfile
 import unittest
 from unittest import mock
 
-import install_chrome as installer
+from adaptive_graphics import scan_and_patch, verify_patched_regions
+from full_graphics_m157 import PATCHES, GPU_FLAGS, GraphicsCompatError
+from patch_chrome import GL_ALLOWED_ORIG, M157_P3_ORIGINAL
+import prepare_chrome
 
 
-class TransactionalInstallTests(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        root = Path(self.tmp.name)
-        self.apps = root / "Applications"
-        self.apps.mkdir()
-        self.original = self.apps / "Google Chrome.app"
-        self.original.mkdir()
-        (self.original / "marker.txt").write_text("original")
-        self.candidate = root / "candidate"
-        self.candidate.mkdir()
-        (self.candidate / "marker.txt").write_text("candidate")
-        self.mocks = [
-            mock.patch.object(installer, "APPLICATIONS", self.apps),
-            mock.patch.object(installer, "DESTINATION", self.original),
-            mock.patch.object(installer.sys, "platform", "darwin"),
-            mock.patch.object(installer.os, "geteuid", return_value=501),
-            mock.patch.object(installer.os, "access", return_value=True),
-            mock.patch.object(installer, "running_installed_chrome",
-                              return_value=False),
-            mock.patch.object(installer, "is_immutable", return_value=False),
-        ]
-        for p in self.mocks:
-            p.start()
-            self.addCleanup(p.stop)
+def synthetic_unvalidated_framework():
+    # Synthetic assembly sequences, NOT evidence that Chrome 158 works.
+    p2 = (b"\x84\xc0\x0f\x85" + struct.pack("<i", 37) +
+          bytes.fromhex("48 b8 09 00 00 00 03 00"))
+    return (b"\xcc" * 80 + GL_ALLOWED_ORIG + b"\xcc" * 80
+            + p2 + b"\xcc" * 80
+            + M157_P3_ORIGINAL + b"\xcc" * 80
+            + PATCHES[0][2] + b"\xcc" * 80
+            + PATCHES[1][2] + b"\xcc" * 80
+            + PATCHES[2][2] + b"\xcc" * 80)
 
-    def _fake_call(self, argv, *, timeout=None):
-        if str(argv[0]) == "/usr/bin/ditto":
-            shutil.copytree(Path(argv[-2]), Path(argv[-1]))
-        return ""
 
-    def test_prevalidation_failure_never_changes_original(self):
-        with mock.patch.object(installer, "validate_candidate",
-                               side_effect=installer.InstallationError("bad signature")):
-            with self.assertRaisesRegex(installer.InstallationError, "bad signature"):
-                installer.install_candidate(self.candidate)
-        self.assertEqual((self.original / "marker.txt").read_text(), "original")
-        self.assertEqual(len(list(self.apps.iterdir())), 1)
+class AdaptiveCompatibilityTests(unittest.TestCase):
+    def test_unknown_version_can_pass_structural_check(self):
+        original = synthetic_unvalidated_framework()
+        patched, offsets, confidence = scan_and_patch(
+            original, version="158.0.8000.12", sha="arbitrary")
+        self.assertEqual(confidence, "STRUCTURAL_ONLY_UNTESTED")
+        self.assertEqual(len(offsets), 6)
+        self.assertEqual(len(patched), len(original))
+        self.assertEqual(patched[offsets["P6_IOSurfaceValidateTarget_BYPASS"]:
+                                 offsets["P6_IOSurfaceValidateTarget_BYPASS"]+3],
+                         b"\xb0\x01\xc3")
+        self.assertIn("P5_IOSurfaceFactoryTarget", offsets)
+        self.assertNotIn("P4", " ".join(offsets.keys()))
 
-    def test_verified_candidate_replaces_old_and_preserves_backup(self):
-        with mock.patch.object(installer, "validate_candidate"), \
-             mock.patch.object(installer, "call", side_effect=self._fake_call), \
-             mock.patch.object(installer, "set_readonly") as readonly:
-            backup = installer.install_candidate(self.candidate)
-        self.assertEqual((self.original / "marker.txt").read_text(), "candidate")
-        self.assertEqual((backup / "marker.txt").read_text(), "original")
-        self.assertTrue(backup.name.startswith(".Google Chrome.pre-GPU-"))
-        readonly.assert_called_once_with(self.original)
-        self.assertFalse(any("pending" in p.name for p in self.apps.iterdir()))
+    def test_unmatched_future_version_refuses_patch(self):
+        orig = synthetic_unvalidated_framework()
+        deleted_p6 = orig.replace(PATCHES[1][2], b"\xcc" * len(PATCHES[1][2]))
+        with self.assertRaisesRegex(GraphicsCompatError, "P6"):
+            scan_and_patch(deleted_p6, version="159.0.0.1", sha="new")
+        self.assertNotEqual(deleted_p6, orig)
 
-    def test_readonly_failure_rolls_back_original(self):
-        with mock.patch.object(installer, "validate_candidate"), \
-             mock.patch.object(installer, "call", side_effect=self._fake_call), \
-             mock.patch.object(installer, "set_readonly",
-                               side_effect=installer.InstallationError("chmod failed")):
-            with self.assertRaisesRegex(installer.InstallationError, "chmod failed"):
-                installer.install_candidate(self.candidate)
-        self.assertEqual((self.original / "marker.txt").read_text(), "original")
-        self.assertFalse(any("pending" in p.name for p in self.apps.iterdir()))
+    def test_ambiguous_future_signature_refuses_patch(self):
+        orig = synthetic_unvalidated_framework() + PATCHES[2][2]
+        with self.assertRaisesRegex(GraphicsCompatError, "P7"):
+            scan_and_patch(orig, version="158.0.0.1", sha="new")
 
-    def test_running_chrome_blocks_any_copy(self):
-        with mock.patch.object(installer, "running_installed_chrome",
-                               return_value=True), \
-             mock.patch.object(installer, "call") as call:
-            with self.assertRaisesRegex(installer.InstallationError, "Close the running"):
-                installer.install_candidate(self.candidate)
-            call.assert_not_called()
-        self.assertEqual((self.original / "marker.txt").read_text(), "original")
+    def test_future_mode_regression_refuses_patch(self):
+        orig = synthetic_unvalidated_framework()
+        # Change the source immediate from 3 to 4; cannot assume enums.
+        altered = orig.replace(M157_P3_ORIGINAL,
+                               M157_P3_ORIGINAL.replace(
+                                   bytes.fromhex("c7 45 ac 03 00 00 00"),
+                                   bytes.fromhex("c7 45 ac 04 00 00 00")))
+        with self.assertRaisesRegex(GraphicsCompatError, "P3"):
+            scan_and_patch(altered, version="158.0.0.1", sha="new")
 
-    def test_locked_original_relocked_if_rename_fails(self):
-        original_rename = Path.rename
-        def fail_on_original(path, target):
-            if path == self.original:
-                raise OSError("rename denied")
-            return original_rename(path, target)
-        commands = []
-        def call(argv, *, timeout=None):
-            commands.append([str(a) for a in argv])
-            return self._fake_call(argv, timeout=timeout)
-        with mock.patch.object(installer, "is_immutable", return_value=True), \
-             mock.patch.object(installer, "validate_candidate"), \
-             mock.patch.object(installer, "call", side_effect=call), \
-             mock.patch.object(Path, "rename", autospec=True,
-                               side_effect=fail_on_original):
-            with self.assertRaisesRegex(OSError, "rename denied"):
-                installer.install_candidate(self.candidate)
-        self.assertEqual((self.original / "marker.txt").read_text(), "original")
-        self.assertEqual(
-            [command[1] for command in commands
-             if command[0] == "/usr/bin/chflags"
-             and command[-1] == str(self.original)],
-            ["nouchg", "uchg"]
-        )
+    def test_verify_only_6_regions_survive_re_signing(self):
+        orig = synthetic_unvalidated_framework()
+        patched, offsets, _ = scan_and_patch(
+            orig, version="158.0.8000.12", sha="new")
+        with tempfile.TemporaryDirectory() as tmp:
+            file = Path(tmp) / "framework"
+            file.write_bytes(patched + b"\x99" * 45)
+            self.assertTrue(verify_patched_regions(file, patched, offsets))
+            with file.open("r+b") as stream:
+                stream.seek(offsets["P5_IOSurfaceFactoryTarget"] + 2)
+                stream.write(b"\x00")
+            with self.assertRaisesRegex(GraphicsCompatError, "P5"):
+                verify_patched_regions(file, patched, offsets)
 
-    def test_wrong_dmg_version_detaches(self):
-        root = Path(self.tmp.name) / "mount"
-        dmg = Path(self.tmp.name) / "target.dmg"
-        dmg.write_bytes(b"fake -- not mounted")
-        commands = []
-        def call(argv, *, timeout=None):
-            commands.append([str(x) for x in argv])
-            return ""
-        with mock.patch.object(installer, "call", side_effect=call), \
-             mock.patch.object(installer.subprocess, "run",
-                               return_value=mock.Mock(returncode=0, stderr="")), \
-             mock.patch.object(installer, "checked_app", return_value=(
-                 root / "Google Chrome.app", 158, "158.0.1.2", None, None)), \
-             mock.patch.object(installer, "verify_official_google_app"):
-            with self.assertRaisesRegex(installer.InstallationError, "Unexpected Chrome version"):
-                with installer.mounted_chrome(dmg, root, installer.EXPECTED_VERSION):
-                    pass
-        self.assertIn("-readonly", commands[0])
-        self.assertEqual(commands[-1][:2], ["/usr/bin/hdiutil", "detach"])
+    def test_shell_contains_full_known_workarounds(self):
+        script = prepare_chrome.shell_script(
+            "Chrome GPU 158.0.8000.12.app", "158.0.8000.12")
+        self.assertIn('SCRIPT_DIR=', script)
+        self.assertIn('exec "$BIN"', script)
+        self.assertIn('Chrome GPU 158.0.8000.12.app', script)
+        for flag in GPU_FLAGS:
+            self.assertIn(flag, script)
+        self.assertNotIn("--no-sandbox", script)
+        self.assertNotIn("/Applications", script)
 
-    def test_fixed_dmgs_are_used(self):
-        self.assertEqual(installer.LATEST_DMG.name, "googlechrome.dmg")
-        self.assertEqual(installer.ANGLE_DMG.name,
+    def test_dmg_paths_stable_not_target_version(self):
+        self.assertEqual(prepare_chrome.TARGET_DMG.name, "googlechrome.dmg")
+        self.assertEqual(prepare_chrome.ANGLE_DMG.name,
                          "google-chrome-151-0-7922-174.dmg")
-        self.assertEqual(installer.EXPECTED_VERSION, "157.0.8103.51")
+        self.assertFalse(hasattr(prepare_chrome, "EXPECTED_VERSION"))
+        self.assertFalse(hasattr(prepare_chrome, "DESTINATION"))
+
+    def test_mount_detaches_even_when_app_inspection_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            dmg = base / "test.dmg"
+            dmg.write_bytes(b"fixture")
+            calls = []
+            def command(argv, **kwargs):
+                calls.append([str(x) for x in argv])
+                return ""
+            with mock.patch.object(prepare_chrome, "command",
+                                   side_effect=command), \
+                 mock.patch.object(prepare_chrome, "checked_app",
+                                   side_effect=ValueError("bad Chrome")), \
+                 mock.patch.object(prepare_chrome.subprocess, "run",
+                                   return_value=mock.Mock(returncode=0,
+                                                          stderr="")):
+                with self.assertRaisesRegex(ValueError, "bad Chrome"):
+                    with prepare_chrome.mount_dmg(
+                        dmg, base / "mount"):
+                        pass
+            self.assertIn("-readonly", calls[0])
+
+    def test_legacy_installer_no_longer_auto_installs(self):
+        from install_chrome import prepare_main
+        self.assertIs(prepare_main, prepare_chrome.main)
 
 
 if __name__ == "__main__":
