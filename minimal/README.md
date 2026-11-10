@@ -162,6 +162,21 @@ Google-branded Chrome build with those entitlements can prevent launch.
 Do not mistake successful `codesign --verify` for launch permission.
 This issue must be diagnosed before any further GPU patch changes.
 
+### Diagnosing a staged Libraries permission error
+
+If the staged copy reports `Operation not permitted` for
+`.../Versions/<version>/Libraries`, the old implementation may have
+been unable to enumerate that directory during signing, or an error during
+staging cleanup may have hidden the real signing failure. The current
+version signs only the explicitly replaced ANGLE dylibs and labels each
+operation (use `--debug` to print the traceback). Cleanup errors are
+reported separately rather than replacing the original error.
+
+A failed run may leave a hidden temporary directory in Downloads named
+`.chrome-gl-test-*`. Inspect the **specific** staging path printed in the
+error before deleting it; never invoke `sudo rm -rf` over a wildcard.
+These temporary files are not your official Chrome installation.
+
 ### Rebuilding after a signature-invalid SIGKILL
 
 If you already have `~/Downloads/Chrome GPU Test.app` created with the
