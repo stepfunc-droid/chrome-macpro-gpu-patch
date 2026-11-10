@@ -11,6 +11,7 @@ from contextlib import contextmanager, ExitStack
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import plistlib
 import shlex
@@ -137,7 +138,7 @@ def prepare(*, check_only=False):
             target = stack.enter_context(mount_dmg(TARGET_DMG, working / "target"))
             donor = stack.enter_context(mount_dmg(ANGLE_DMG, working / "angle151"))
             _, target_milestone, version, _, target_binary = checked_app(target)
-            if not __import__("re").fullmatch(r"[0-9]+(?:\\.[0-9]+){2,3}", version):
+            if not re.fullmatch(r"[0-9]+(?:[.][0-9]+){2,3}", version):
                 raise PreparationError(f"Invalid Chrome version string: {version!r}")
             _, donor_milestone, donor_version, donor_fw, _ = checked_app(donor)
             if donor_milestone != 151:
