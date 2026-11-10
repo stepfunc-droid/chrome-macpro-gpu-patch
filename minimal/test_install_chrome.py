@@ -115,6 +115,64 @@ class AdaptiveCompatibilityTests(unittest.TestCase):
                         pass
             self.assertIn("-readonly", calls[0])
 
+    def test_mount_dmg_does_not_verify_unclean_vendor_app(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            dmg = base / "source.dmg"
+            dmg.write_bytes(b"stub")
+            with mock.patch.object(prepare_chrome, "command"), \
+                 mock.patch.object(prepare_chrome, "checked_app"), \
+                 mock.patch.object(prepare_chrome, "verify_official_google_app") as verify, \
+                 mock.patch.object(prepare_chrome.subprocess, "run",
+                                   return_value=mock.Mock(returncode=0, stderr="")):
+                with prepare_chrome.mount_dmg(dmg, base / "mount"):
+                    verify.assert_not_called()
+                verify.assert_not_called()
+
+    def test_trusted_copy_strips_metadata_before_google_signature(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            donor = root / "mounted/Google Chrome.app"
+            candidate = root / "copy/Google Chrome.app"
+            framework = root / "framework"
+            framework.write_bytes(b"original framework for hash test")
+            operations = []
+            with mock.patch.object(
+                 prepare_chrome, "command",
+                 side_effect=lambda *a, **kw: operations.append("ditto")), \
+                 mock.patch.object(
+                     prepare_chrome, "checked_app",
+                     return_value=(candidate, 151, "151.0.7922.174",
+                                   framework, framework)), \
+                 mock.patch.object(
+                     prepare_chrome, "strip_codesign_detritus_from_copy",
+                     side_effect=lambda *a: operations.append("strip")), \
+                 mock.patch.object(
+                     prepare_chrome, "verify_official_google_app",
+                     side_effect=lambda *a: operations.append("verify")):
+                prepare_chrome.trusted_copy_from_dmg(donor, candidate)
+            self.assertEqual(operations, ["ditto", "strip", "verify"])
+
+    def test_trusted_copy_hash_mismatch_stops_before_signature_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            framework = root / "framework"
+            framework.write_bytes(b"the wrong content")
+            with mock.patch.object(prepare_chrome, "command"), \
+                 mock.patch.object(prepare_chrome, "checked_app",
+                     return_value=(root, 157, "157.0.8103.51",
+                                   root, framework)), \
+                 mock.patch.object(
+                     prepare_chrome, "strip_codesign_detritus_from_copy") as strip, \
+                 mock.patch.object(
+                     prepare_chrome, "verify_official_google_app") as verify:
+                with self.assertRaisesRegex(prepare_chrome.PreparationError,
+                                            "differs from DMG"):
+                    prepare_chrome.trusted_copy_from_dmg(
+                        root, root / "out.app", expected_sha="0" * 64)
+                strip.assert_not_called()
+                verify.assert_not_called()
+
     def test_legacy_installer_no_longer_auto_installs(self):
         from install_chrome import prepare_main
         self.assertIs(prepare_main, prepare_chrome.main)
