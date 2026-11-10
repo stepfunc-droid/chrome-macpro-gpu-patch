@@ -18,7 +18,7 @@ drivers. It does **not** patch your everyday Chrome installation.
 - **No** use of the upstream repository's opaque `angle_dylibs/` binaries:
   the ANGLE libraries must be supplied from your *own genuine Chrome 151*
   app bundle. They may still be ABI-incompatible with newer Chrome versions.
-- Only operates on a new, explicitly named output app **under your home**.
+- Only operates on a new test copy in `~/Downloads/` by default (or another new path under your home).
   It checks the clean inputs' signatures and Google's Team ID (EQHXZ8M8AV), refuses ambiguous byte patterns,
   and verifies that signing succeeds before publishing the new copy.
 
@@ -53,7 +53,7 @@ Example layout (adjust paths to your actual copies):
 
 - `/Applications/Google Chrome.app` = your **current Chrome 151** (donor).
 - `~/Downloads/Google Chrome.app` = a **newer clean official Chrome** (input).
-- `~/Applications/Chrome GPU Test.app` = **new output**, must not exist.
+- `~/Downloads/Chrome GPU Test.app` = **new output**, must not exist.
 
 ### Read-only diagnostics for a new Chromium milestone
 
@@ -74,7 +74,7 @@ The reported offsets are only diagnostics, never automatically patched.
 python3 minimal/patch_chrome.py \
   --source "$HOME/Downloads/Google Chrome.app" \
   --angle-from "/Applications/Google Chrome.app" \
-  --output "$HOME/Applications/Chrome GPU Test.app" \
+  --output "$HOME/Downloads/Chrome GPU Test.app" \
   --experimental-version
 ```
 
@@ -91,22 +91,31 @@ to patch. It does not attempt heuristic patching of arbitrary bytes.
 python3 minimal/patch_chrome.py \
   --source "$HOME/Downloads/Google Chrome.app" \
   --angle-from "/Applications/Google Chrome.app" \
-  --output "$HOME/Applications/Chrome GPU Test.app" \
+  --output "$HOME/Downloads/Chrome GPU Test.app" \
   --experimental-version --apply
 ```
 
-This copies the source to a temporary folder, modifies the copied framework,
-copies the two ANGLE libraries, re-signs and verifies the copy, and only
-then moves it to the output path. On error it deletes the temporary copy,
+This copies the source to a temporary folder in Downloads using `ditto --norsrc`,
+removes only disallowed Finder/resource-fork extended attributes from that
+**temporary copy**, and verifies the copied app still has Google's original
+valid signature and Team ID **before** patching. This works around errors like
+`resource fork, Finder information, or similar detritus not allowed` without
+modifying the source. If the original code signature is actually invalid, it
+still refuses to proceed. It then modifies the copied framework, copies the
+two ANGLE libraries, ad-hoc signs and verifies the test copy, and finally
+moves it to the specified output path. On error it deletes the temporary copy,
 **never** the original browser.
+
+If you omit `--output`, the script defaults to
+`~/Downloads/Chrome GPU Test.app`.
 
 ### 3. Test with a disposable profile
 
 Run the exact command printed by the script. It will resemble:
 
 ```bash
-"$HOME/Applications/Chrome GPU Test.app/Contents/MacOS/Google Chrome" \
-  --user-data-dir="$HOME/Applications/Chrome-GPU-Test-Profile" \
+"$HOME/Downloads/Chrome GPU Test.app/Contents/MacOS/Google Chrome" \
+  --user-data-dir="$HOME/Downloads/Chrome-GPU-Test-Profile" \
   --use-angle=gl --ignore-gpu-blocklist --no-first-run
 ```
 
