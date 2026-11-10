@@ -12,6 +12,7 @@ from pathlib import Path
 import plistlib
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -35,6 +36,25 @@ LIBS = ("libEGL.dylib", "libGLESv2.dylib")
 
 class PatchError(Exception):
     pass
+
+
+def copy_angle_without_flags(source, destination):
+    """Copy ANGLE data and Unix mode, but never donor BSD flags or xattrs.
+
+    shutil.copy2() invokes copystat(), which can carry macOS's uchg flag
+    over from the Google-signed donor. That prevents codesign --force and
+    even temporary-directory cleanup (EPERM). Use copyfile instead.
+    """
+    destination = Path(destination)
+    if destination.is_symlink():
+        raise PatchError(f"Refusing to overwrite a symlinked ANGLE destination: {destination}")
+    shutil.copyfile(source, destination)
+    destination.chmod(stat.S_IMODE(Path(source).stat().st_mode))
+    flags = getattr(destination.stat(), "st_flags", 0)
+    immutable = getattr(stat, "UF_IMMUTABLE", 0)
+    if immutable and (flags & immutable):
+        raise PatchError(f"Staged ANGLE library unexpectedly has uchg: {destination}")
+    return destination
 
 
 def sha256(data):
@@ -303,8 +323,8 @@ def main(argv=None):
             if not dest_libdir.is_dir():
                 dest_libdir.mkdir(parents=True, exist_ok=True)
             for donor in libs:
-                phase = f"copy ANGLE library {donor.name}"
-                shutil.copy2(donor, dest_libdir / donor.name)
+                phase = f"copy ANGLE library {donor.name} without BSD flags"
+                copy_angle_without_flags(donor, dest_libdir / donor.name)
             # Ad-hoc signing changes the browser identity. Never preserve
             # Google-only Team ID/keychain entitlements in locally signed code.
             # Sign library/framework/helper/outer app separately per Chromium.
