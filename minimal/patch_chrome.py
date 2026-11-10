@@ -167,6 +167,25 @@ def cmd(argv):
     return result.stdout
 
 
+def strip_codesign_detritus_from_copy(app):
+    """Remove only unsupported Finder/resource-fork metadata from the temp copy.
+
+    Never traverse symlinks or modify the input Chrome installation.
+    A damaged or tampered code signature must still fail verification.
+    """
+    removed = 0
+    names = {"com.apple.FinderInfo", "com.apple.ResourceFork"}
+    for root, dirs, files in os.walk(app, followlinks=False):
+        for item in (root, *(os.path.join(root, name) for name in dirs + files)):
+            if os.path.islink(item):
+                continue
+            for attr in os.listxattr(item):
+                if attr in names:
+                    os.removexattr(item, attr)
+                    removed += 1
+    return removed
+
+
 def verify_official_google_app(app):
     """Require a valid app seal AND Google's documented Chrome Team ID."""
     cmd(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)])
@@ -213,7 +232,8 @@ def main(argv=None):
     parser.add_argument("--source", required=True, help="Clean, latest official Google Chrome.app")
     parser.add_argument("--diagnose", action="store_true", help="Read-only pattern report; needs only --source")
     parser.add_argument("--angle-from", help="Clean Google Chrome 151.app with ANGLE libraries")
-    parser.add_argument("--output", help="NEW test copy, under your home (must not exist)")
+    parser.add_argument("--output", default="~/Downloads/Chrome GPU Test.app",
+                        help="NEW test copy, under your home (default: ~/Downloads/Chrome GPU Test.app)")
     parser.add_argument("--experimental-version", action="store_true",
                         help="Allow unvalidated milestone (e.g. M157), if byte signatures match exactly")
     parser.add_argument("--apply", action="store_true", help="Actually create and re-sign the test copy")
@@ -231,8 +251,8 @@ def main(argv=None):
             for line in inspect_binary_patterns(original):
                 print(line)
             return 0
-        if not args.angle_from or not args.output:
-            raise PatchError("--angle-from and --output are required unless --diagnose is used")
+        if not args.angle_from:
+            raise PatchError("--angle-from is required unless --diagnose is used")
         if args.apply and sys.platform != "darwin":
             raise PatchError("Applying requires macOS; pattern analysis works on other systems")
         if args.apply and os.geteuid() == 0:
@@ -249,16 +269,22 @@ def main(argv=None):
             print("DRY RUN ONLY; pass --apply to create the test copy.")
             return 0
 
-        # Fail if source has a bad signature. Donor app must also be intact.
-        for app in (source, Path(args.angle_from).expanduser().resolve(strict=True)):
-            verify_official_google_app(app)
+        # Verify the Chrome 151 ANGLE donor without changing its installed app.
+        verify_official_google_app(Path(args.angle_from).expanduser().resolve(strict=True))
         workdir = Path(tempfile.mkdtemp(prefix=".chrome-gl-test-", dir=str(output.parent)))
         stage = workdir / "Google Chrome.app"
         try:
-            cmd(["/usr/bin/ditto", str(source), str(stage)])
+            # --norsrc skips HFS resource forks and Finder metadata while
+            # preserving the actual executable and signed bundle resources.
+            cmd(["/usr/bin/ditto", "--norsrc", str(source), str(stage)])
             _, copied_major, _, copied_fw, copied_binary = checked_app(stage)
             if sha256(copied_binary.read_bytes()) != sha256(original):
                 raise PatchError("Clone did not match original; aborting")
+            count = strip_codesign_detritus_from_copy(stage)
+            print(f"[*] Removed {count} prohibited Finder/resource-fork attributes from test copy.")
+            # Verify ORIGINAL Google-signed content in the CLEANED COPY.
+            # A damaged vendor signature must still fail, not be ignored.
+            verify_official_google_app(stage)
             copied_binary.write_bytes(modified)
             dest_libdir = copied_fw / "Libraries"
             dest_libdir.mkdir(parents=True, exist_ok=True)
