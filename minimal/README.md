@@ -7,11 +7,16 @@ drivers. It does **not** patch your everyday Chrome installation.
 
 ## Scope / security choices
 
-- Two framework edits only: Chromium's OpenGL allowlist check and ANGLE
-  display-initialization jump (patterns derived from the upstream project).
+- **Default: two framework edits only**: Chromium's OpenGL allowlist check and
+  ANGLE display-initialization jump (patterns derived from the upstream project).
+- **Opt-in M157 experiment:** a third, exact-build-only change that substitutes
+  a HARDWARE_GL candidate for the normally selected Graphite path. Not proven
+  on the user's GPU. The opt-in does not change other default behaviors.
 - **No** `Seatbelt::IsSandboxed()` or GPU sandbox edits.
 - **No** `ScopedEGLSurfaceIOSurface::ValidateTarget()` bypass.
-- **No** GPU mode fallback override and no IOSurface texture-target edits.
+- **No** GPU fallback disabling and no IOSurface texture-target edits.
+  The optional GPU-mode experiment adds a hardware GL candidate; normal
+  recovery/fallback code is not patched.
 - **No** launcher replacement, background agents, cron, software downloads,
   automatic browser updates, repository self-updates, root privileges, or
   `--no-sandbox` flags.
@@ -71,6 +76,57 @@ python3 minimal/patch_chrome.py --diagnose   --source "$HOME/Downloads/Google Ch
 Paste the terminal report into the discussion/PR so we can identify how
 that particular Chromium build changed. **Do not force a pattern match.**
 The reported offsets are only diagnostics, never automatically patched.
+
+### M157 GPU mode experiment — isolated optional third patch
+
+**For exactly one audited Chrome build**: Google Chrome 157.0.8103.51,
+x86_64 framework SHA-256
+`81fc51a5952b527f5cd8e9549107effde2f0d4655f75aab75bcfbebae7f6793b`.
+Any other binary hash, size, offset, or instruction sequence fails closed.
+
+Review of Chromium 157 source showed `supports_gpu_mode_hardware_gl_(false)`
+on macOS, so the standard build does **not** offer the HARDWARE_GL GPU mode.
+The one P3 candidate at file offset `0x1fa5846` checks a condition
+and writes `GpuMode=3` into the mode list. In **M157**, value 3 means
+`HARDWARE_GRAPHITE` (not `DISABLED`) and 1 means `HARDWARE_GL`.
+As an **experimental hypothesis**, we NOP *only* that conditional branch
+and change *only* that enum immediate from 3 to 1. This is an adaptation of
+upstream P3, not a blanket GPU fallthrough or a fix established on Kepler.
+
+P4 (Seatbelt/sandbox check), P6 (unconditional IOSurface validation),
+and P5/P7 (IOSurface rectangle target) remain **unmodified**. GPU crash
+fallback and the original launcher remain enabled.
+
+To create a **separate third-patch experiment**, keep the successful v2
+copy intact and choose a new destination:
+
+```bash
+python3 minimal/patch_chrome.py \
+  --source "$HOME/Downloads/Google Chrome.app" \
+  --angle-from "/Applications/Google Chrome.app" \
+  --output "$HOME/Downloads/Chrome GPU Test v3.app" \
+  --experimental-version --experimental-gpu-mode --apply --debug
+```
+
+On launch use only a disposable profile and the expected GL selection:
+
+```bash
+"$HOME/Downloads/Chrome GPU Test v3.app/Contents/MacOS/Google Chrome" \
+  --user-data-dir="$HOME/Downloads/Chrome-GPU-Mode-Profile" \
+  --use-angle=gl --ignore-gpu-blocklist \
+  --disable-features=SkiaGraphite --no-first-run
+```
+
+This may still fail inside the GPU process (ANGLE ABI/IOSurface issues);
+`--version` and `codesign --verify` alone are not sufficient evidence.
+Stop the test if the GPU repeatedly crashes. Test only `chrome://gpu`
+and inspect whether `--use-gl=disabled` has disappeared from the running
+GPU subprocess before doing any WebGL work.
+
+Source:
+https://github.com/chromium/chromium/blob/157.0.8103.51/content/browser/gpu/gpu_data_manager_impl_private.cc
+and
+https://github.com/chromium/chromium/blob/157.0.8103.51/gpu/config/gpu_mode.h
 
 ### 1. Dry run (default: no writes)
 
