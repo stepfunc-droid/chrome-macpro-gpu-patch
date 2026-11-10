@@ -98,7 +98,9 @@ class TransactionalInstallTests(unittest.TestCase):
                 installer.install_candidate(self.candidate)
         self.assertEqual((self.original / "marker.txt").read_text(), "original")
         self.assertEqual(
-            [command[1] for command in commands if command[0] == "/usr/bin/chflags"],
+            [command[1] for command in commands
+             if command[0] == "/usr/bin/chflags"
+             and command[-1] == str(self.original)],
             ["nouchg", "uchg"]
         )
 
@@ -111,6 +113,8 @@ class TransactionalInstallTests(unittest.TestCase):
             commands.append([str(x) for x in argv])
             return ""
         with mock.patch.object(installer, "call", side_effect=call), \
+             mock.patch.object(installer.subprocess, "run",
+                               return_value=mock.Mock(returncode=0, stderr="")), \
              mock.patch.object(installer, "checked_app", return_value=(
                  root / "Google Chrome.app", 158, "158.0.1.2", None, None)), \
              mock.patch.object(installer, "verify_official_google_app"):
