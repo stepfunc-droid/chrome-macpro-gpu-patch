@@ -3,7 +3,7 @@
 import struct
 import unittest
 
-from patch_chrome import GL_ALLOWED_ORIG, PatchError, plan_binary_patch
+from patch_chrome import GL_ALLOWED_ORIG, PatchError, inspect_binary_patterns, plan_binary_patch
 
 
 def fixture(displacement=0x606):
@@ -46,6 +46,16 @@ class BinaryPatchTests(unittest.TestCase):
         extra = original[display_start:display_start + 16]
         with self.assertRaises(PatchError):
             plan_binary_patch(original + extra)
+
+    def test_diagnostic_reports_missing_display_match(self):
+        report = "\n".join(inspect_binary_patterns(GL_ALLOWED_ORIG + b"\x00" * 64))
+        self.assertIn("Display pattern 1: 0 match(es)", report)
+        self.assertIn("Display pattern 2: 0 match(es)", report)
+
+    def test_diagnostic_reports_known_signature(self):
+        report = "\n".join(inspect_binary_patterns(fixture()))
+        self.assertIn("Display pattern 1: 1 match(es)", report)
+        self.assertIn("OpenGL allow check: exact=1", report)
 
 
 if __name__ == "__main__":
