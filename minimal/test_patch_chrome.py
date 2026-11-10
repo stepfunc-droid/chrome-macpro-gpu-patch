@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Synthetic byte-pattern tests; does not test actual Chrome or GPU hardware."""
 import struct
+import stat
+from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
 from patch_chrome import (GL_ALLOWED_ORIG, PatchError, inspect_binary_patterns,
-                          plan_binary_patch, strip_codesign_detritus_from_copy)
+                          plan_binary_patch, strip_codesign_detritus_from_copy,
+                          copy_angle_without_flags)
 
 
 def fixture(displacement=0x606):
@@ -116,6 +120,31 @@ class BinaryPatchTests(unittest.TestCase):
             count = strip_codesign_detritus_from_copy(stage)
         self.assertEqual(count, 0)
         self.assertNotIn(["/usr/bin/xattr", link], called)
+
+    def test_angle_copy_does_not_copy_donor_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "donor.dylib"
+            dest = Path(tmp) / "staged.dylib"
+            src.write_bytes(b"test ANGLE bytes")
+            src.chmod(0o755)
+            with mock.patch("patch_chrome.shutil.copy2", side_effect=AssertionError(
+                    "copy2 would preserve donor BSD flags")):
+                result = copy_angle_without_flags(src, dest)
+            self.assertEqual(result, dest)
+            self.assertEqual(dest.read_bytes(), src.read_bytes())
+            self.assertEqual(stat.S_IMODE(dest.stat().st_mode), 0o755)
+
+    def test_angle_copy_refuses_staged_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "donor.dylib"
+            outside = Path(tmp) / "outside-file"
+            dest = Path(tmp) / "staged.dylib"
+            src.write_bytes(b"donor")
+            outside.write_bytes(b"outside")
+            dest.symlink_to(outside)
+            with self.assertRaises(PatchError):
+                copy_angle_without_flags(src, dest)
+            self.assertEqual(outside.read_bytes(), b"outside")
 
     def test_diagnostic_reports_missing_display_match(self):
         report = "\n".join(inspect_binary_patterns(GL_ALLOWED_ORIG + b"\x00" * 64))
