@@ -55,6 +55,19 @@ Example layout (adjust paths to your actual copies):
 - `~/Downloads/Google Chrome.app` = a **newer clean official Chrome** (input).
 - `~/Applications/Chrome GPU Test.app` = **new output**, must not exist.
 
+### Read-only diagnostics for a new Chromium milestone
+
+If a newer version says "Display initialization check not unique or absent",
+the patcher **has not modified anything**. Get a bounded byte-pattern report:
+
+```bash
+python3 minimal/patch_chrome.py --diagnose   --source "$HOME/Downloads/Google Chrome.app"
+```
+
+Paste the terminal report into the discussion/PR so we can identify how
+that particular Chromium build changed. **Do not force a pattern match.**
+The reported offsets are only diagnostics, never automatically patched.
+
 ### 1. Dry run (default: no writes)
 
 ```bash
