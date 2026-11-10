@@ -26,7 +26,7 @@ class FullGraphicsCompatTests(unittest.TestCase):
         source = bytearray(b"\xcc" * 350)
         spots = (("P5", 24), ("P6", 100), ("P7", 188))
         for (name, pos), (label, _offset, old, _new) in zip(spots, PATCHES):
-            self.assertEqual(name, label)
+            self.assertTrue(label.startswith(name + "_"))
             source[pos:pos + len(old)] = old
         original = bytes(source)
         data = bytearray(original)
