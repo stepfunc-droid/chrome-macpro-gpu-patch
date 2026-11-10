@@ -47,6 +47,26 @@ class BinaryPatchTests(unittest.TestCase):
         with self.assertRaises(PatchError):
             plan_binary_patch(original + extra)
 
+    def test_m157_both_distinct_patterns_prefers_specific_one(self):
+        # Actual M157 diagnostic: one specific ANGLE hit, one unrelated
+        # broad legacy hit. They must not be counted as two candidates.
+        broad = (b"\x84\xc0\x0f\x85" + struct.pack("<i", -6005)
+                 + b"\x83\x7d\x8c\x00\x0f\x85" + b"\xbb" * 16)
+        original = fixture() + b"\x7f" * 24 + broad
+        modified, positions = plan_binary_patch(original)
+        specific_offset = original.index(b"\x84\xc0\x0f\x85") + 2
+        self.assertEqual(positions["display_init_jump"], specific_offset)
+        self.assertEqual(modified[-len(broad):], original[-len(broad):],
+                         "unrelated legacy-looking instruction must remain untouched")
+
+    def test_legacy_fallback_when_specific_absent(self):
+        broad = (b"\x84\xc0\x0f\x85" + struct.pack("<i", 42)
+                 + b"\x83\x7d\x8c\x00\x0f\x85")
+        original = b"\xcc" * 32 + GL_ALLOWED_ORIG + b"\xff" * 24 + broad
+        modified, positions = plan_binary_patch(original)
+        self.assertEqual(modified[positions["display_init_jump"]:positions["display_init_jump"]+6],
+                         b"\xe9" + struct.pack("<i", 43) + b"\x90")
+
     def test_diagnostic_reports_missing_display_match(self):
         report = "\n".join(inspect_binary_patterns(GL_ALLOWED_ORIG + b"\x00" * 64))
         self.assertIn("Display pattern 1: 0 match(es)", report)
