@@ -135,6 +135,29 @@ If the safe two-patch approach fails, collect the GPU logs before deciding
 whether any additional change is justified. **Never** turn off the full
 browser sandbox merely to make the probe pass.
 
+### Diagnose immediate SIGKILL on launch (no writes)
+
+If the copied Chrome binary exits immediately with SIGKILL (even with
+`--version`), do **not** change sandbox settings, SIP, or GPU patch
+patterns yet. First collect the actual termination reason from the
+macOS `.ips` crash report:
+
+```bash
+git pull origin experiment/minimal-chrome-gl
+python3 minimal/inspect_crash.py
+```
+
+The report prints process path, code-signing identity, exception, and
+termination, but not stack traces or full private crash contents. Ensure
+`procPath` points to **Chrome GPU Test.app**, not your regular Chrome.
+This project's ad-hoc signature currently preserves original Google
+Chrome entitlements including the proprietary
+`EQHXZ8M8AV.com.google.Chrome` application identifier and Google-only
+Keychain groups. Chromium's signing docs explain that re-signing a
+Google-branded Chrome build with those entitlements can prevent launch.
+Do not mistake successful `codesign --verify` for launch permission.
+This issue must be diagnosed before any further GPU patch changes.
+
 ### Restore / clean up
 
 Close the test browser, then remove only the `Chrome GPU Test.app` and
