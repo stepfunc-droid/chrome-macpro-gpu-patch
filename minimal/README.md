@@ -177,6 +177,31 @@ A failed run may leave a hidden temporary directory in Downloads named
 error before deleting it; never invoke `sudo rm -rf` over a wildcard.
 These temporary files are not your official Chrome installation.
 
+#### If `codesign` cannot replace `libEGL.dylib`
+
+A reproduced M157 failure showed both:
+
+- `codesign ... libEGL.dylib: Operation not permitted`
+- staging cleanup couldn't remove the containing `Libraries` directory.
+
+This points to **filesystem flags, an ACL, or directory protection on the staged
+copy**, not another GPU pattern to patch. The exact attribute is not confirmed.
+Before changing flags, inspect the *leftover* staging directory with the
+read-only tool:
+
+```bash
+python3 minimal/inspect_stage_permissions.py \
+  --stage "$HOME/Downloads/.chrome-gl-test-fiaqmhwh/Google Chrome.app"
+```
+
+Look at `flags`, ACL entries, owner and mode of the version directory,
+`Libraries` and the two `lib*.dylib` files. If the stage path differs,
+use the **exact** path printed by the failure.
+
+No automatic `chflags`, `chmod -N`, `sudo`, or SIP changes are performed.
+The repair should target only the specific attribute and path established
+by this read-only report. The installed Chrome versions are untouched.
+
 ### Rebuilding after a signature-invalid SIGKILL
 
 If you already have `~/Downloads/Chrome GPU Test.app` created with the
