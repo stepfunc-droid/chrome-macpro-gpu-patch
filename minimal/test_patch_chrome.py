@@ -43,7 +43,7 @@ class BinaryPatchTests(unittest.TestCase):
     def test_duplicate_display_init_pattern_fails(self):
         original = fixture()
         display_start = original.index(b"\x84\xc0\x0f\x85")
-        extra = original[display_start:display_start + 14]
+        extra = original[display_start:display_start + 16]
         with self.assertRaises(PatchError):
             plan_binary_patch(original + extra)
 
