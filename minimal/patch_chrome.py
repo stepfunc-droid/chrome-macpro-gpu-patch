@@ -17,6 +17,8 @@ import subprocess
 import sys
 import tempfile
 
+from signing import sign_test_copy, SigningError
+
 GL_ALLOWED_ORIG = bytes.fromhex("84 c0 74 0f 80 7d b8 00 74 cd 48 8b 45 b0")
 GL_ALLOWED_PATCHED = bytes.fromhex("84 c0 90 90 80 7d b8 00 74 cd 48 8b 45 b0")
 GL_ANCHOR = re.compile(
@@ -292,10 +294,10 @@ def main(argv=None):
             dest_libdir.mkdir(parents=True, exist_ok=True)
             for donor in libs:
                 shutil.copy2(donor, dest_libdir / donor.name)
-            # Ad-hoc signing changes the browser identity. Preserve helper entitlements.
-            cmd(["/usr/bin/codesign", "--force", "--deep", "--sign", "-",
-                 "--preserve-metadata=entitlements,flags", str(stage)])
-            cmd(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(stage)])
+            # Ad-hoc signing changes the browser identity. Never preserve
+            # Google-only Team ID/keychain entitlements in locally signed code.
+            # Sign library/framework/helper/outer app separately per Chromium.
+            sign_test_copy(stage)
             if output.exists() or output.is_symlink():
                 raise PatchError("Output appeared while patching; refusing overwrite")
             stage.rename(output)
@@ -309,7 +311,7 @@ def main(argv=None):
         print("Check chrome://gpu. A successful signature does NOT prove GPU acceleration.")
         print("To uninstall, close the test browser and delete only the test .app and profile.")
         return 0
-    except (PatchError, OSError, ValueError, subprocess.SubprocessError) as exc:
+    except (PatchError, SigningError, OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
