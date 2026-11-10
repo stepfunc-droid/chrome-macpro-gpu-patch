@@ -168,10 +168,11 @@ def cmd(argv):
 
 
 def strip_codesign_detritus_from_copy(app):
-    """Remove only unsupported Finder/resource-fork metadata from the temp copy.
+    """Remove only Finder/resource-fork metadata from the temporary app copy.
 
-    Never traverse symlinks or modify the input Chrome installation.
-    A damaged or tampered code signature must still fail verification.
+    macOS Python builds do not necessarily provide os.listxattr/removexattr.
+    Use the system xattr utility instead. Never follow symlinks or modify the
+    source installation; preserve all other extended attributes.
     """
     removed = 0
     names = {"com.apple.FinderInfo", "com.apple.ResourceFork"}
@@ -179,10 +180,11 @@ def strip_codesign_detritus_from_copy(app):
         for item in (root, *(os.path.join(root, name) for name in dirs + files)):
             if os.path.islink(item):
                 continue
-            for attr in os.listxattr(item):
-                if attr in names:
-                    os.removexattr(item, attr)
-                    removed += 1
+            # On macOS, 'xattr /path' prints one attribute name per line.
+            present = set(cmd(["/usr/bin/xattr", str(item)]).splitlines())
+            for attr in sorted(present & names):
+                cmd(["/usr/bin/xattr", "-d", attr, str(item)])
+                removed += 1
     return removed
 
 
