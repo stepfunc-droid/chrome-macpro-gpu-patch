@@ -78,6 +78,21 @@ def mount_dmg(dmg, mountpoint):
                       f"{result.stderr.strip()}", file=sys.stderr)
 
 
+def trusted_copy_from_dmg(source, destination, expected_sha=None):
+    """Clone a mounted vendor app, remove only copy-side signing detritus,
+    then require the original Google signature before using its contents.
+    Never alter or verify in-place on a mounted DMG.
+    """
+    command(["/usr/bin/ditto", "--norsrc", str(source), str(destination)])
+    app, milestone, version, framework, binary = checked_app(destination)
+    if expected_sha is not None:
+        if hashlib.sha256(binary.read_bytes()).hexdigest() != expected_sha:
+            raise PreparationError("Cloned Chrome framework differs from DMG input")
+    strip_codesign_detritus_from_copy(destination)
+    verify_official_google_app(destination)
+    return app, milestone, version, framework, binary
+
+
 def shell_script(app_name, version, signed_framework_hash=None):
     """A launch script beside the app, with a disposable independent profile.
 
@@ -208,26 +223,16 @@ def prepare(*, check_only=False):
                     )
             staged_root.mkdir(parents=True, exist_ok=False)
             print("[*] Cloning and signing isolated test app...")
-            command(["/usr/bin/ditto", "--norsrc", str(target), str(stage)])
-            _, _, _, _, stage_binary = checked_app(stage)
-            if hashlib.sha256(stage_binary.read_bytes()).hexdigest() != digest:
-                raise PreparationError("Clone differs from signed DMG")
-            strip_codesign_detritus_from_copy(stage)
-            # Same successful order as patch_chrome.py: clone, clean
-            # metadata, then verify the original Google signature.
-            verify_official_google_app(stage)
+            _, _, _, _, stage_binary = trusted_copy_from_dmg(
+                target, stage, expected_sha=digest)
 
-            # Also authenticate the Chrome 151 donor on a clean private
-            # copy.  Verification on the read-only donor DMG itself can
-            # fail due to Finder/resource-fork metadata.
+            # Authenticate the Chrome 151 donor on a cleaned private copy,
+            # not on the DMG, where Finder/resource-fork metadata interfere.
             donor_copy = working / "Google Chrome 151 donor.app"
-            command(["/usr/bin/ditto", "--norsrc",
-                     str(donor), str(donor_copy)])
-            _, donor_copy_major, donor_copy_version, donor_copy_fw, _ = checked_app(donor_copy)
+            _, donor_copy_major, donor_copy_version, donor_copy_fw, _ = (
+                trusted_copy_from_dmg(donor, donor_copy))
             if donor_copy_major != 151 or donor_copy_version != donor_version:
                 raise PreparationError("Chrome 151 donor copy changed version")
-            strip_codesign_detritus_from_copy(donor_copy)
-            verify_official_google_app(donor_copy)
 
             stage_binary.write_bytes(modified)
             staged_libs = stage_binary.parent / "Libraries"
