@@ -48,6 +48,30 @@ framework SHA-256 from the build manifest.
 confirming the UI/WebGL/GPU behaviour yourself, back up the existing
 installed browser and move the candidate manually.
 
+### P6 A/B test (do not install the control)
+
+To test whether P6's IOSurface validation bypass is necessary:
+
+```bash
+python3 minimal/prepare_chrome.py --without-p6
+"$HOME/Downloads/P6-off/launch-chrome-gpu.sh"
+```
+
+This prepares an independent `~/Downloads/P6-off/Google Chrome.app` from
+the same two fixed DMGs. Its only byte-level difference from the normal
+patch plan is that **P6 retains its original 20-byte prologue**, while
+P1/P2/P3/P5/P7 are identical. It also writes its own launch script
+and versioned patch report in the `P6-off` directory. The startup
+flags are the same, but the P6-off test gets its own disposable profile.
+Close other Chrome test instances before running it.
+
+Observe whether Chrome renders text/pages and whether a reproducible
+`backdrop-filter` blur still flickers. If it fails to render, that
+supports P6 being required in the *current* P5/P7 configuration, not
+necessarily in every theoretically possible implementation. Do **not**
+move the P6-off control to Applications or lock it. Both builds retain
+GPU sandbox; P4 is excluded.
+
 ### Make the manually installed Chrome read-only
 
 Only *after* you have manually installed and checked the exact generated
