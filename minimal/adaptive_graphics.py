@@ -117,16 +117,55 @@ def scan_and_patch(original, *, version, sha):
     return bytes(data), positions, "STRUCTURAL_ONLY_UNTESTED"
 
 
+
+def make_p6_off_control(original, modified, positions):
+    """A/B control: restore ONLY P6's original instructions.
+
+    Start with the same six-patch plan, then undo exactly P6. Fail closed
+    unless both the pristine bytes and the planned bypass match our trusted
+    pattern. P1/P2/P3/P5/P7 remain byte-for-byte unchanged.
+    """
+    name, _m157_offset, pristine, bypass = M157_PATCHES[1]
+    if name != "P6_IOSurfaceValidateTarget_BYPASS":
+        raise GraphicsCompatError("P6 patch definition changed")
+    if name not in positions:
+        raise GraphicsCompatError("P6 missing from proposed patch plan")
+    offset = positions[name]
+    if original[offset:offset + len(pristine)] != pristine:
+        raise GraphicsCompatError("P6 original bytes unexpectedly changed")
+    if modified[offset:offset + len(bypass)] != bypass:
+        raise GraphicsCompatError("P6 proposed bypass bytes unexpectedly changed")
+    result = bytearray(modified)
+    result[offset:offset + len(pristine)] = pristine
+    modified_regions = dict(positions)
+    # Preserve original P6 as a CHECKED, UNMODIFIED region. The on-disk
+    # verifier checks it explicitly after codesign alongside five patches.
+    del modified_regions[name]
+    modified_regions["P6_IOSurfaceValidateTarget_ORIGINAL"] = offset
+    return bytes(result), modified_regions
+
+
 def verify_patched_regions(staged_binary, expected_bytes, positions):
-    """Compare six small code regions, not a 500MB whole-binary diff.
+    """Compare six small code regions (5 edits + original P6 for A/B).
 
     Signature size may change on re-signing. Every patched instruction
     position is compared against the bytes planned from the input DMG.
     The candidate must also pass codesign and an executable smoke test.
     """
-    if len(positions) != 6:
+    required_base = {
+        "allowed_gl_jump", "display_init_jump",
+        "experimental_gl_mode_branch", "P5_IOSurfaceFactoryTarget",
+        "P7_IOSurfaceBackingTarget",
+    }
+    p6_names = {
+        "P6_IOSurfaceValidateTarget_BYPASS",
+        "P6_IOSurfaceValidateTarget_ORIGINAL",
+    }
+    if (len(positions) != 6 or
+            set(positions).difference(p6_names) != required_base or
+            len(set(positions) & p6_names) != 1):
         raise GraphicsCompatError(
-            f"Expected P1/P2/P3/P5/P6/P7, got: {list(positions)}"
+            f"Expected P1/P2/P3/P5/P7 and either original or bypassed P6: {list(positions)}"
         )
     for name, offset in positions.items():
         if name == "allowed_gl_jump":
