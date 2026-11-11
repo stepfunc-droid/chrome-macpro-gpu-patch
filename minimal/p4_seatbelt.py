@@ -34,23 +34,23 @@ P4_PATTERN = re.compile(
 P4_DIAGNOSTIC_PATTERNS = (
     ("strict upstream M153+ context", P4_PATTERN),
     ("upstream GpuMain prefix through CALL/TEST", re.compile(
-        rb"\\x89\\xc7\\x31\\xf6\\x31\\xd2\\x31\\xc0\\xe8.{4}\\x85\\xc0",
+        rb"\x89\xc7\x31\xf6\x31\xd2\x31\xc0\xe8.{4}\x85\xc0",
         re.DOTALL,
     )),
     ("TEST/JE-near followed by RBX+0x88 load", re.compile(
-        rb"\\x85\\xc0\\x0f\\x84.{4}\\x48\\x8b\\xbb\\x88\\x00\\x00\\x00",
+        rb"\x85\xc0\x0f\x84.{4}\x48\x8b\xbb\x88\x00\x00\x00",
         re.DOTALL,
     )),
     ("TEST/JE-short followed by RBX+0x88 load", re.compile(
-        rb"\\x85\\xc0\\x74.\\x48\\x8b\\xbb\\x88\\x00\\x00\\x00",
+        rb"\x85\xc0\x74.\x48\x8b\xbb\x88\x00\x00\x00",
         re.DOTALL,
     )),
     ("CALL/TEST/JE-near (generic; NOT a patch signature)", re.compile(
-        rb"\\xe8.{4}\\x85\\xc0\\x0f\\x84.{4}",
+        rb"\xe8.{4}\x85\xc0\x0f\x84.{4}",
         re.DOTALL,
     )),
     ("CALL/TEST/JE-short (generic; NOT a patch signature)", re.compile(
-        rb"\\xe8.{4}\\x85\\xc0\\x74.",
+        rb"\xe8.{4}\x85\xc0\x74.",
         re.DOTALL,
     )),
 )
@@ -84,7 +84,7 @@ def diagnose_p4_patterns(original, *, max_examples=8):
         "These candidates are NOT safe patch locations. A P4 modification "
         "requires proof of GpuMain/Seatbelt control flow using disassembly."
     )
-    return "\\n".join(report)
+    return "\n".join(report)
 
 
 def make_p4_on_control(original, modified, positions, *, version, sha):
