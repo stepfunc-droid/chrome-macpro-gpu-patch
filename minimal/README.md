@@ -22,7 +22,7 @@ python3 minimal/prepare_chrome.py --check-only
 The checker locates P1/P2/P3/P5/P6/P7 by anchored machine-code signatures,
 requires a unique match for every patch, verifies original instructions and
 replacement sizes, and refuses an unmatched or ambiguous build. P4 is
-deliberately excluded. A matching new version is **structurally compatible**,
+excluded by default, with a separate exact-M157-only diagnostic opt-in. A matching new version is **structurally compatible**,
 but is NOT yet proven to work on the NVIDIA GT 750M.
 
 To prepare a new standalone candidate in Downloads:
@@ -87,6 +87,50 @@ launch flags; only P5/P6/P7 are restored to the source framework's bytes. It
 uses its own disposable profile and cannot pass `lock_chrome.py`'s full-patch
 manifest check. Do not move it to Applications. Compare the same scrolling
 page and backdrop-filter cases against the standard candidate.
+
+### P1–P7 all-on (P4 + P6): isolated diagnostic ONLY
+
+This option is for testing whether upstream P4 changes GPU initialization or
+rendering behaviour compared with our working six-patch Chrome 157. **It is
+not a recommended everyday browser**. P4 skips a GPU Seatbelt/sandbox-state
+failure branch. It does not turn off macOS sandbox, but it suppresses an
+important check and can hide an initialization failure.
+
+Both P4 **and** P6 are enabled; P1/P2/P3/P5/P7 remain identical to the
+standard six-patch plan. P6 already bypasses IOSurface target validation.
+P4 is limited to the **exact** original Chrome 157.0.8103.51 x86_64 Framework
+SHA256 `81fc51a5952b527f5cd8e9549107effde2f0d4655f75aab75bcfbebae7f6793b`.
+The original upstream's generic fallback signatures are deliberately *not*
+used: P4 requires exactly one complete anchored call/test/jump/mov sequence
+and will fail closed if it is absent or ambiguous.
+
+From the project root:
+
+```bash
+# Read-only check first. If P4 does not uniquely match, nothing is patched.
+python3 minimal/prepare_chrome.py --with-p4 --check-only
+
+# Only if the check succeeds:
+python3 minimal/prepare_chrome.py --with-p4
+
+# Independent application, launcher, profile, and JSON report:
+"$HOME/Downloads/P1-P7/launch-chrome-gpu.sh" chrome://gpu
+```
+
+Requires the two standard DMGs in `~/Downloads`. The output is in
+`~/Downloads/P1-P7/` and the launcher has **no /Applications fallback**.
+It refuses to overwrite an existing test. `--with-p4` cannot be combined
+with `--without-p6` or `--without-p567`.
+
+For a controlled comparison, close other Chrome test instances, use the same
+page and scrolling pattern in normal P1/P2/P3/P5/P6/P7 and P1–P7 all-on,
+and compare `chrome://gpu` (Sandboxed, GPU crashes, GaneshGL) and
+`filter`/`backdrop-filter` flicker. **Do not install this build, lock it, or
+use real passwords, banking, or exchange accounts.** A successful static check
+or codesign check does not prove P4's runtime safety or usefulness.
+
+Source for upstream P4 instruction pattern:
+https://github.com/khoinguyen88kt/chrome-macpro-gpu-patch/blob/main/patchers/chrome.py
 
 ### Make the manually installed Chrome read-only
 
