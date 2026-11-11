@@ -5,7 +5,8 @@ Exact M157 hash uses the already hardware-tested patch. Other versions are
 considered *structurally patchable* only when every unique anchored machine
 code signature matches. This does NOT establish GPU runtime compatibility.
 
-P1/P2/P3/P5/P6/P7 only: deliberately NEVER patches P4 Seatbelt check.
+P1/P2/P3/P5/P6/P7 by default. P4 is a separate opt-in, exact-M157-only
+Seatbelt diagnostic; never auto-enable it for unknown Chrome builds.
 P6 unconditionally skips IOSurface target validation (compatibility risk).
 """
 import re
@@ -13,6 +14,7 @@ import re
 from patch_chrome import PatchError, plan_binary_patch
 from full_graphics_m157 import BUILD_SHA256, BUILD_SIZE, GraphicsCompatError
 from full_graphics_m157 import PATCHES as M157_PATCHES
+from p4_seatbelt import P4_NAME
 
 P3 = re.compile(
     rb"\x84\xc0(?P<guard>\x0f\x84.{4})"
@@ -181,7 +183,7 @@ def make_p6_off_control(original, modified, positions):
 
 
 def verify_patched_regions(staged_binary, expected_bytes, positions):
-    """Compare six small code regions (5 edits + original P6 for A/B).
+    """Compare requested patch regions, including opt-in P4 when present.
 
     Signature size may change on re-signing. Every patched instruction
     position is compared against the bytes planned from the input DMG.
@@ -201,15 +203,16 @@ def verify_patched_regions(staged_binary, expected_bytes, positions):
     keys = set(positions)
     valid = ((keys == (regular | states[0])) or
              (keys == (regular | states[1])) or
-             (keys == (core | p567_original)))
+             (keys == (core | p567_original)) or
+             (keys == (regular | states[0] | {P4_NAME})))
     if not valid:
         raise GraphicsCompatError(
-            f"Unexpected patch state for P1/P2/P3/P5/P6/P7: {list(positions)}"
+            f"Unexpected patch state for P1-P7 experimental controls: {list(positions)}"
         )
     for name, offset in positions.items():
         if name == "allowed_gl_jump":
             count = 2
-        elif name == "display_init_jump":
+        elif name in ("display_init_jump", P4_NAME):
             count = 6
         else:
             count = 80  # covers the entire P3/P5/P6/P7 patch sequence
