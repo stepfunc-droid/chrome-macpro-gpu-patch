@@ -100,24 +100,36 @@ Both P4 **and** P6 are enabled; P1/P2/P3/P5/P7 remain identical to the
 standard six-patch plan. P6 already bypasses IOSurface target validation.
 P4 is limited to the **exact** original Chrome 157.0.8103.51 x86_64 Framework
 SHA256 `81fc51a5952b527f5cd8e9549107effde2f0d4655f75aab75bcfbebae7f6793b`.
-The original upstream's generic fallback signatures are deliberately *not*
-used: P4 requires exactly one complete anchored call/test/jump/mov sequence
-and will fail closed if it is absent or ambiguous.
+The upstream's generic fallback signatures are deliberately *not* used.
+The original upstream P4 sequence looked for a following
+`mov rdi,[rbx+0x88]`, but a read-only scan of the exact audited
+Chrome 157 Framework showed `mov rdi,[rbx+0x90]` after the corresponding
+call/test/JE pattern. The initial generic P4 scan correctly found zero.
 
-**If the P4 check reports `found 0`:** that means the upstream P4
-machine-code signature is not present in the original Chrome 157 binary.
-Do **not** use a generic conditional-jump search as a replacement patch.
-Instead run this standalone, read-only diagnostic (no donor DMG needed):
+The M157-specific P4 candidate is now **pinned** to the observed original
+instruction bytes at file offset `0x1e1400a`. Only the six-byte
+`je near` at `0x1e14019` is changed from
+`0f 84 f7 00 00 00` to `90 90 90 90 90 90`.
+The SHA-256, binary size, expected original instructions, **unique**
+full-context occurrence, exact location, P1–P7 state and overlap checks
+must all pass before the experimental copy is created. All other
+versions and any unexpected byte layout fail closed.
+
+**Caveat:** the candidate is strongly consistent with the upstream P4
+machine-code shape, but exact `GpuMain`/Seatbelt function identity and
+the safety of bypassing its branch have **not** been proven by local
+symbol-aware disassembly. The change is **test-only**, not a proposed
+production/security fix. This experiment only asks whether the different
+branch affects GPU behaviour or filter flicker.
+
+To inspect the read-only evidence yourself (no donor DMG required):
 
 ```bash
 python3 minimal/diagnose_p4.py
 ```
 
-It mounts `~/Downloads/googlechrome.dmg` read-only, checks the original
-Framework SHA-256, and prints a bounded report of candidate instruction
-contexts. The report contains **file offsets and hex bytes for analysis only**;
-none is automatically selected for patching. Compare with the compiled
-`GpuMain`/Seatbelt control flow before adding any new P4 patch signature.
+This mounts `~/Downloads/googlechrome.dmg` read-only and reports candidate
+byte contexts; it never patches anything.
 
 From the project root:
 
