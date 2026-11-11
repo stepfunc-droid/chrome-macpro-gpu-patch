@@ -16,6 +16,28 @@ from full_graphics_m157 import BUILD_SHA256, BUILD_SIZE, GraphicsCompatError
 
 P4_NAME = "P4_SeatbeltIsSandboxed_BYPASS"
 
+# Bytes reported by read-only diagnose_p4.py on the audited Chrome
+# 157.0.8103.51 x86_64 Framework. No absolute address inferred from a
+# different Chrome build is used.
+#
+# Upstream's P4 site uses the sequence:
+#   mov edi,eax; xor esi,esi; xor edx,edx; xor eax,eax
+#   call rel32; test eax,eax; je near; mov rdi,[rbx+0x88]
+# In this M157 binary the corresponding candidate differs in the final
+# displacement: [rbx+0x90]. The exact CALL and JE displacements below
+# are from the user's diagnostic; function identity is not proven by these
+# bytes alone. Treat this as an experimental, explicit security-check bypass.
+P4_M157_CONTEXT_OFFSET = 0x1E1400A
+P4_M157_CONTEXT = bytes.fromhex(
+    "89 c7 31 f6 31 d2 31 c0 "
+    "e8 ad 2f 42 0c 85 c0 "
+    "0f 84 f7 00 00 00 "
+    "48 8b bb 90 00 00 00"
+)
+P4_M157_GUARD_OFFSET = P4_M157_CONTEXT_OFFSET + 15
+P4_M157_GUARD_ORIGINAL = bytes.fromhex("0f 84 f7 00 00 00")
+P4_M157_GUARD_PATCHED = b"\x90" * 6
+
 # Upstream patchers/chrome.py's MOST SPECIFIC M153+ GpuMain context.
 # call rel32; test eax,eax; je rel32; mov rdi,[rbx+0x88].
 # Never match generic call/test/conditional-jump sequences.
@@ -33,6 +55,7 @@ P4_PATTERN = re.compile(
 # In particular, CALL/TEST/Jcc can appear thousands of times in Chrome.
 P4_DIAGNOSTIC_PATTERNS = (
     ("strict upstream M153+ context", P4_PATTERN),
+    ("observed Chrome 157 exact [rbx+0x90] context", re.compile(re.escape(P4_M157_CONTEXT))),
     ("upstream GpuMain prefix through CALL/TEST", re.compile(
         rb"\x89\xc7\x31\xf6\x31\xd2\x31\xc0\xe8.{4}\x85\xc0",
         re.DOTALL,
@@ -111,18 +134,23 @@ def make_p4_on_control(original, modified, positions, *, version, sha):
     if set(positions) != required:
         raise GraphicsCompatError("P4 must be added to the six-patch P1/P2/P3/P5/P6/P7 plan")
 
-    matches = list(P4_PATTERN.finditer(original))
-    if len(matches) != 1:
+    # On the user's exact known M157 binary, match the ENTIRE observed
+    # instruction context including call and jump displacements. Do not
+    # widen this to any of the thousands of generic call/test/jump sites.
+    occurrences = original.count(P4_M157_CONTEXT)
+    context_at = original.find(P4_M157_CONTEXT)
+    if occurrences != 1 or context_at != P4_M157_CONTEXT_OFFSET:
         raise GraphicsCompatError(
-            f"P4 GPU Seatbelt check: expected one strictly anchored match; "
-            f"found {len(matches)}; refusing unverified bypass"
+            "P4 GPU Seatbelt candidate: expected one exact Chrome 157 "
+            "instruction context at "
+            f"0x{P4_M157_CONTEXT_OFFSET:x}; found {occurrences}, "
+            f"first at 0x{context_at:x}; refusing unverified bypass"
         )
-    offset = matches[0].start("guard")
-    end = offset + 6
-    expected = original[offset:end]
-    if expected[:2] != b"\x0f\x84":
-        raise GraphicsCompatError("P4 unexpected branch instruction")
-    if modified[offset:end] != expected:
+    offset = P4_M157_GUARD_OFFSET
+    end = offset + len(P4_M157_GUARD_ORIGINAL)
+    if original[offset:end] != P4_M157_GUARD_ORIGINAL:
+        raise GraphicsCompatError("P4 original conditional branch differs")
+    if modified[offset:end] != P4_M157_GUARD_ORIGINAL:
         raise GraphicsCompatError("P4 branch already modified in patch plan")
 
     # P1-P7 offsets are starts of independently verified regions. P3, P5-P7
@@ -133,7 +161,7 @@ def make_p4_on_control(original, modified, positions, *, version, sha):
             raise GraphicsCompatError(f"P4 instruction overlaps existing {name} region")
 
     data = bytearray(modified)
-    data[offset:end] = b"\x90" * 6
+    data[offset:end] = P4_M157_GUARD_PATCHED
     new_positions = dict(positions)
     new_positions[P4_NAME] = offset
     return bytes(data), new_positions
