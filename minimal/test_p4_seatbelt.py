@@ -67,6 +67,19 @@ class P4DiagnosticTests(unittest.TestCase):
         with self.assertRaisesRegex(GraphicsCompatError, "found 2"):
             self.apply(original=bytes(data))
 
+    def test_readonly_diagnostics_show_strict_and_looser_contexts(self):
+        report = p4_seatbelt.diagnose_p4_patterns(self.original, max_examples=2)
+        self.assertIn("strict upstream M153+ context: 1 match(es)", report)
+        self.assertIn("upstream GpuMain prefix through CALL/TEST: 1 match(es)", report)
+        self.assertIn("CALL/TEST/JE-near", report)
+        self.assertIn("offset 0x1f4", report)
+        self.assertIn("NOT safe patch locations", report)
+        self.assertEqual(self.original[515:521], bytes.fromhex("0f 84 45 00 00 00"))
+
+    def test_diagnostic_probe_does_not_return_patchable_offsets(self):
+        with self.assertRaisesRegex(ValueError, "max_examples"):
+            p4_seatbelt.diagnose_p4_patterns(self.original, max_examples=0)
+
     def test_reject_absent_context(self):
         with self.assertRaisesRegex(GraphicsCompatError, "found 0"):
             self.apply(original=b"\xcc" * 900)
