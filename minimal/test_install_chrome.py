@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from adaptive_graphics import scan_and_patch, verify_patched_regions
+from adaptive_graphics import scan_and_patch, verify_patched_regions, make_p6_off_control
 from full_graphics_m157 import PATCHES, GPU_FLAGS, GraphicsCompatError
 from patch_chrome import GL_ALLOWED_ORIG, M157_P3_ORIGINAL
 import prepare_chrome
@@ -37,6 +37,46 @@ class AdaptiveCompatibilityTests(unittest.TestCase):
                          b"\xb0\x01\xc3")
         self.assertIn("P5_IOSurfaceFactoryTarget", offsets)
         self.assertNotIn("P4", " ".join(offsets.keys()))
+
+    def test_p6_off_differs_only_at_p6_20_bytes(self):
+        original = synthetic_unvalidated_framework()
+        full, full_offsets, _ = scan_and_patch(
+            original, version="158.0.8000.12", sha="new")
+        off, control_offsets = make_p6_off_control(original, full, full_offsets)
+        p6_at = full_offsets["P6_IOSurfaceValidateTarget_BYPASS"]
+        self.assertEqual(off[p6_at:p6_at+20], original[p6_at:p6_at+20])
+        self.assertEqual(full[:p6_at], off[:p6_at])
+        self.assertEqual(full[p6_at+20:], off[p6_at+20:])
+        self.assertEqual(len(off), len(full))
+        self.assertIn("P6_IOSurfaceValidateTarget_ORIGINAL", control_offsets)
+        self.assertNotIn("P6_IOSurfaceValidateTarget_BYPASS", control_offsets)
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "framework"
+            f.write_bytes(off + b"\\x99" * 15)
+            self.assertTrue(verify_patched_regions(f, off, control_offsets))
+            with f.open("r+b") as handle:
+                handle.seek(p6_at)
+                handle.write(b"\\xb0")
+            with self.assertRaisesRegex(GraphicsCompatError, "P6"):
+                verify_patched_regions(f, off, control_offsets)
+
+    def test_p6_off_refuses_unexpected_bypass_bytes(self):
+        original = synthetic_unvalidated_framework()
+        full, offsets, _ = scan_and_patch(
+            original, version="158.0.8000.12", sha="new")
+        tampered = bytearray(full)
+        tampered[offsets["P6_IOSurfaceValidateTarget_BYPASS"]] = 0
+        with self.assertRaisesRegex(GraphicsCompatError, "P6 proposed bypass"):
+            make_p6_off_control(original, bytes(tampered), offsets)
+
+    def test_p6_off_launcher_has_separate_profile(self):
+        script = prepare_chrome.shell_script(
+            "Google Chrome.app", "157.0.8103.51", p6_off=True)
+        self.assertIn("Chrome-GPU-P6-off-157.0.8103.51-Profile", script)
+        self.assertNotIn("Chrome-GPU-157.0.8103.51-Profile", script)
+        self.assertNotIn("/Applications", script)
+        for flag in GPU_FLAGS:
+            self.assertIn(flag, script)
 
     def test_unmatched_future_version_refuses_patch(self):
         orig = synthetic_unvalidated_framework()
