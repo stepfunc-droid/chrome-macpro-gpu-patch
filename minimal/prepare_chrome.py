@@ -5,6 +5,7 @@ Never changes /Applications, SIP, installed Chrome, or background services.
 Target Chrome VERSION is discovered from googlechrome.dmg, NOT hardcoded.
 An unknown version may be prepared only if *all six* anchored instruction
 checks pass; it remains unverified until the user tests GPU rendering.
+The optional --with-p4 bypass is restricted to the audited Chrome 157 hash.
 """
 import argparse
 from contextlib import contextmanager, ExitStack
@@ -27,6 +28,7 @@ from patch_chrome import (
 )
 from signing import sign_test_copy, SigningError
 from full_graphics_m157 import GPU_FLAGS, GraphicsCompatError
+from p4_seatbelt import make_p4_on_control
 from adaptive_graphics import (
     scan_and_patch, verify_patched_regions, make_p6_off_control,
     make_p567_off_control,
@@ -97,7 +99,7 @@ def trusted_copy_from_dmg(source, destination, expected_sha=None):
 
 
 def shell_script(app_name, version, signed_framework_hash=None, *,
-                 p6_off=False, p567_off=False):
+                 p6_off=False, p567_off=False, p4_on=False):
     """A launch script beside the app, with a disposable independent profile.
 
     It intentionally supplies the SAME graphics arguments that worked on
@@ -142,7 +144,7 @@ def shell_script(app_name, version, signed_framework_hash=None, *,
         ])
     lines.extend([
         'exec "$BIN" \\',
-        f'  --user-data-dir="$HOME/Downloads/Chrome-GPU-{"P5-P7-off-" if p567_off else "P6-off-" if p6_off else ""}{version}-Profile" \\',
+        f'  --user-data-dir="$HOME/Downloads/Chrome-GPU-{"P1-P7-" if p4_on else "P5-P7-off-" if p567_off else "P6-off-" if p6_off else ""}{version}-Profile" \\',
     ])
     for flag in GPU_FLAGS:
         lines.append("  " + shlex.quote(flag) + " \\")
@@ -168,12 +170,12 @@ def validate_stage(stage, expected, positions, version):
         raise PreparationError("Staged Chrome --version timed out") from exc
     if version not in output:
         raise PreparationError("Chrome smoke test returned unexpected version: " + output)
-    print("[+] Candidate verified: P1/P2/P3, requested P5/P6/P7 state, codesign and --version.")
+    print("[+] Candidate verified: requested patch regions, codesign and --version (not GPU runtime).")
 
 
-def prepare(*, check_only=False, p6_off=False, p567_off=False):
-    if p6_off and p567_off:
-        raise PreparationError("Choose either --without-p6 or --without-p567")
+def prepare(*, check_only=False, p6_off=False, p567_off=False, p4_on=False):
+    if sum(bool(x) for x in (p6_off, p567_off, p4_on)) > 1:
+        raise PreparationError("Choose only one of --without-p6, --without-p567, --with-p4")
     if sys.platform != "darwin" or os.geteuid() == 0:
         raise PreparationError("Run on macOS as your normal account (no sudo)")
     if not DOWNLOADS.is_dir():
@@ -206,7 +208,11 @@ def prepare(*, check_only=False, p6_off=False, p567_off=False):
                 raise PreparationError(
                     f"Chrome {version} cannot be structurally patched: {exc}"
                 ) from exc
-            if p567_off:
+            if p4_on:
+                modified, offsets = make_p4_on_control(
+                    original, modified, offsets, version=version, sha=digest)
+                confidence += "_P1_P7_SEATBELT_BYPASS_UNTESTED"
+            elif p567_off:
                 modified, offsets = make_p567_off_control(original, modified, offsets)
                 confidence += "_P567_OFF_CONTROL"
             elif p6_off:
@@ -215,7 +221,11 @@ def prepare(*, check_only=False, p6_off=False, p567_off=False):
             print(f"Compatibility: {confidence}")
             for label, position in offsets.items():
                 print(f"  {label}: 0x{position:x}")
-            print("P4 Seatbelt bypass NOT applied.")
+            if p4_on:
+                print("WARNING: P4 GPU Seatbelt state-check bypass ENABLED; diagnostic only.")
+                print("Do NOT install this copy or use sensitive accounts.")
+            else:
+                print("P4 Seatbelt bypass NOT applied.")
             if p567_off:
                 print("P5/P6/P7 patches NOT applied; original code retained.")
             else:
@@ -230,9 +240,10 @@ def prepare(*, check_only=False, p6_off=False, p567_off=False):
             app_name = "Google Chrome.app"
             shell_name = "launch-chrome-gpu.sh"
             manifest_name = f"chrome-gpu-{version}.patch.json"
-            output_dir = (DOWNLOADS / "P5-P7-off" if p567_off else
+            output_dir = (DOWNLOADS / "P1-P7" if p4_on else
+                          DOWNLOADS / "P5-P7-off" if p567_off else
                           DOWNLOADS / "P6-off" if p6_off else DOWNLOADS)
-            if p6_off or p567_off:
+            if p6_off or p567_off or p4_on:
                 if output_dir.is_symlink():
                     raise PreparationError(f"Refusing symlinked experiment folder: {output_dir}")
                 output_dir.mkdir(exist_ok=True)
@@ -275,8 +286,8 @@ def prepare(*, check_only=False, p6_off=False, p567_off=False):
             shell_tmp = working / shell_name
             shell_tmp.write_text(shell_script(
                 app_name, version,
-                None if p6_off else signed_framework_hash,
-                p6_off=p6_off, p567_off=p567_off), encoding="utf-8")
+                None if (p6_off or p4_on) else signed_framework_hash,
+                p6_off=p6_off, p567_off=p567_off, p4_on=p4_on), encoding="utf-8")
             shell_tmp.chmod(0o755)
             manifest_tmp = working / manifest_name
             manifest_tmp.write_text(json.dumps({
@@ -287,7 +298,7 @@ def prepare(*, check_only=False, p6_off=False, p567_off=False):
                 "signed_framework_sha256": signed_framework_hash,
                 "compatibility": confidence,
                 "patches": {name: hex(pos) for name, pos in offsets.items()},
-                "p4_seatbelt_bypass": False,
+                "p4_seatbelt_bypass": p4_on,
                 "p5_iosurface_factory_patch": not p567_off,
                 "p6_iosurface_validation_bypass": not (p6_off or p567_off),
                 "p7_iosurface_backing_patch": not p567_off,
@@ -308,7 +319,10 @@ def prepare(*, check_only=False, p6_off=False, p567_off=False):
         print(f"[+] Patch report: {manifest_output}")
         print(f"Run: {shlex.quote(str(shell_output))}")
         print("Only a live chrome://gpu + visual test can confirm GPU functionality.")
-        if p567_off:
+        if p4_on:
+            print("P1-P7 ALL-ON DIAGNOSTIC ONLY: P4 skips a GPU sandbox check.")
+            print("Do not install, lock or log into sensitive sites with this test copy.")
+        elif p567_off:
             print("P5/P6/P7-OFF CONTROL: P1/P2/P3 and the GPU flags are unchanged.")
             print("Do not install this diagnostic control.")
         elif p6_off:
@@ -343,10 +357,13 @@ def main(argv=None):
     parser.add_argument(
         "--without-p567", action="store_true",
         help="Create a P5/P6/P7-off control in ~/Downloads/P5-P7-off; only P1/P2/P3 remain patched")
+    parser.add_argument(
+        "--with-p4", action="store_true",
+        help="Exact Chrome 157 ONLY: create isolated P1-P7 all-on Seatbelt-bypass diagnostic in ~/Downloads/P1-P7")
     args = parser.parse_args(argv)
     try:
         prepare(check_only=args.check_only, p6_off=args.without_p6,
-                p567_off=args.without_p567)
+                p567_off=args.without_p567, p4_on=args.with_p4)
         return 0
     except (PreparationError, PatchError, GraphicsCompatError,
             SigningError, OSError, ValueError) as exc:
