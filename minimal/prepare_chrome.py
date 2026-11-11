@@ -27,7 +27,7 @@ from patch_chrome import (
 )
 from signing import sign_test_copy, SigningError
 from full_graphics_m157 import GPU_FLAGS, GraphicsCompatError
-from adaptive_graphics import scan_and_patch, verify_patched_regions
+from adaptive_graphics import scan_and_patch, verify_patched_regions, make_p6_off_control
 
 
 DOWNLOADS = Path.home() / "Downloads"
@@ -93,7 +93,7 @@ def trusted_copy_from_dmg(source, destination, expected_sha=None):
     return app, milestone, version, framework, binary
 
 
-def shell_script(app_name, version, signed_framework_hash=None):
+def shell_script(app_name, version, signed_framework_hash=None, *, p6_off=False):
     """A launch script beside the app, with a disposable independent profile.
 
     It intentionally supplies the SAME graphics arguments that worked on
@@ -138,7 +138,7 @@ def shell_script(app_name, version, signed_framework_hash=None):
         ])
     lines.extend([
         'exec "$BIN" \\',
-        f'  --user-data-dir="$HOME/Downloads/Chrome-GPU-{version}-Profile" \\',
+        f'  --user-data-dir="$HOME/Downloads/Chrome-GPU-{"P6-off-" if p6_off else ""}{version}-Profile" \\',
     ])
     for flag in GPU_FLAGS:
         lines.append("  " + shlex.quote(flag) + " \\")
@@ -164,10 +164,10 @@ def validate_stage(stage, expected, positions, version):
         raise PreparationError("Staged Chrome --version timed out") from exc
     if version not in output:
         raise PreparationError("Chrome smoke test returned unexpected version: " + output)
-    print("[+] Candidate verified: all six code regions, codesign and --version.")
+    print("[+] Candidate verified: five or six patches, P6 state, codesign and --version.")
 
 
-def prepare(*, check_only=False):
+def prepare(*, check_only=False, p6_off=False):
     if sys.platform != "darwin" or os.geteuid() == 0:
         raise PreparationError("Run on macOS as your normal account (no sudo)")
     if not DOWNLOADS.is_dir():
@@ -200,12 +200,17 @@ def prepare(*, check_only=False):
                 raise PreparationError(
                     f"Chrome {version} cannot be structurally patched: {exc}"
                 ) from exc
+            if p6_off:
+                modified, offsets = make_p6_off_control(original, modified, offsets)
+                confidence += "_P6_OFF_UNTESTED"
             print(f"Compatibility: {confidence}")
             for label, position in offsets.items():
                 print(f"  {label}: 0x{position:x}")
-            print("P4 Seatbelt bypass NOT applied. P6 IOSurface validation bypass applied.")
+            print("P4 Seatbelt bypass NOT applied.")
+            print("P6 validation: ORIGINAL (not bypassed)" if p6_off else
+                  "P6 validation: BYPASSED")
             if check_only:
-                print("[+] Six-patch structural check passed; NO files created.")
+                print("[+] Structural check passed; NO files created.")
                 return None
 
             # Fixed output names: the user can move Google Chrome.app to
@@ -213,9 +218,14 @@ def prepare(*, check_only=False):
             app_name = "Google Chrome.app"
             shell_name = "launch-chrome-gpu.sh"
             manifest_name = f"chrome-gpu-{version}.patch.json"
-            app_output = DOWNLOADS / app_name
-            shell_output = DOWNLOADS / shell_name
-            manifest_output = DOWNLOADS / manifest_name
+            output_dir = DOWNLOADS / "P6-off" if p6_off else DOWNLOADS
+            if p6_off:
+                if output_dir.is_symlink():
+                    raise PreparationError(f"Refusing symlinked P6-off folder: {output_dir}")
+                output_dir.mkdir(exist_ok=True)
+            app_output = output_dir / app_name
+            shell_output = output_dir / shell_name
+            manifest_output = output_dir / manifest_name
             for path in (app_output, shell_output, manifest_output):
                 if path.exists() or path.is_symlink():
                     raise PreparationError(
@@ -250,8 +260,10 @@ def prepare(*, check_only=False):
             # File publication happens only after all signing and smoke checks.
             # All final outputs live under ~/Downloads, never /Applications.
             shell_tmp = working / shell_name
-            shell_tmp.write_text(shell_script(app_name, version, signed_framework_hash),
-                                encoding="utf-8")
+            shell_tmp.write_text(shell_script(
+                app_name, version,
+                None if p6_off else signed_framework_hash,
+                p6_off=p6_off), encoding="utf-8")
             shell_tmp.chmod(0o755)
             manifest_tmp = working / manifest_name
             manifest_tmp.write_text(json.dumps({
@@ -263,7 +275,7 @@ def prepare(*, check_only=False):
                 "compatibility": confidence,
                 "patches": {name: hex(pos) for name, pos in offsets.items()},
                 "p4_seatbelt_bypass": False,
-                "p6_iosurface_validation_bypass": True,
+                "p6_iosurface_validation_bypass": not p6_off,
                 "gpu_functional_test_passed": False,
                 "user_must_test_before_install": True
             }, indent=2) + "\n", encoding="utf-8")
@@ -281,7 +293,10 @@ def prepare(*, check_only=False):
         print(f"[+] Patch report: {manifest_output}")
         print(f"Run: {shlex.quote(str(shell_output))}")
         print("Only a live chrome://gpu + visual test can confirm GPU functionality.")
-        print("The App is NOT installed or locked; move it yourself after testing.")
+        if p6_off:
+            print("P6-OFF TEST ONLY: do NOT install this experimental control.")
+        else:
+            print("The App is NOT installed or locked; move it yourself after testing.")
         print("Normal Finder launches do NOT inject test flags; use the shell script.")
         return app_output
     except Exception:
@@ -304,9 +319,12 @@ def main(argv=None):
     parser.add_argument(
         "--check-only", action="store_true",
         help="Read-only scan of both DMGs; do not publish an app or shell script")
+    parser.add_argument(
+        "--without-p6", action="store_true",
+        help="Create independent P6-off control in ~/Downloads/P6-off; five patches only")
     args = parser.parse_args(argv)
     try:
-        prepare(check_only=args.check_only)
+        prepare(check_only=args.check_only, p6_off=args.without_p6)
         return 0
     except (PreparationError, PatchError, GraphicsCompatError,
             SigningError, OSError, ValueError) as exc:
