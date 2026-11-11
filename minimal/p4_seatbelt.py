@@ -27,6 +27,66 @@ P4_PATTERN = re.compile(
 )
 
 
+
+# Read-only, progressively looser evidence probes. These are *never* used
+# to select a patch offset; they exist only to inspect compiler variation.
+# In particular, CALL/TEST/Jcc can appear thousands of times in Chrome.
+P4_DIAGNOSTIC_PATTERNS = (
+    ("strict upstream M153+ context", P4_PATTERN),
+    ("upstream GpuMain prefix through CALL/TEST", re.compile(
+        rb"\\x89\\xc7\\x31\\xf6\\x31\\xd2\\x31\\xc0\\xe8.{4}\\x85\\xc0",
+        re.DOTALL,
+    )),
+    ("TEST/JE-near followed by RBX+0x88 load", re.compile(
+        rb"\\x85\\xc0\\x0f\\x84.{4}\\x48\\x8b\\xbb\\x88\\x00\\x00\\x00",
+        re.DOTALL,
+    )),
+    ("TEST/JE-short followed by RBX+0x88 load", re.compile(
+        rb"\\x85\\xc0\\x74.\\x48\\x8b\\xbb\\x88\\x00\\x00\\x00",
+        re.DOTALL,
+    )),
+    ("CALL/TEST/JE-near (generic; NOT a patch signature)", re.compile(
+        rb"\\xe8.{4}\\x85\\xc0\\x0f\\x84.{4}",
+        re.DOTALL,
+    )),
+    ("CALL/TEST/JE-short (generic; NOT a patch signature)", re.compile(
+        rb"\\xe8.{4}\\x85\\xc0\\x74.",
+        re.DOTALL,
+    )),
+)
+
+
+def diagnose_p4_patterns(original, *, max_examples=8):
+    """Return bounded, read-only byte evidence; NEVER returns patch offsets.
+
+    All offsets are raw Framework *file* offsets. The caller must establish
+    Mach-O section mapping and disassemble before assigning a source function.
+    """
+    if not 1 <= max_examples <= 24:
+        raise ValueError("max_examples must be between 1 and 24")
+    report = ["P4 READ-ONLY INSTRUCTION PROBES (not verified patch sites):"]
+    for label, pattern in P4_DIAGNOSTIC_PATTERNS:
+        count, examples = 0, []
+        for match in pattern.finditer(original):
+            count += 1
+            if len(examples) < max_examples:
+                start = match.start()
+                lo = max(0, start - 20)
+                hi = min(len(original), match.end() + 24)
+                examples.append(
+                    f"  offset 0x{start:x}: {original[lo:hi].hex(' ')}"
+                )
+        report.append(f"{label}: {count} match(es)")
+        report.extend(examples)
+        if count > len(examples):
+            report.append(f"  ... {count - len(examples)} additional match(es) omitted")
+    report.append(
+        "These candidates are NOT safe patch locations. A P4 modification "
+        "requires proof of GpuMain/Seatbelt control flow using disassembly."
+    )
+    return "\\n".join(report)
+
+
 def make_p4_on_control(original, modified, positions, *, version, sha):
     """Return P1-P7 candidate from existing six-patch plan, or fail closed.
 
