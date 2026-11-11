@@ -77,11 +77,7 @@ def scan_and_patch(original, *, version, sha):
     positions["experimental_gl_mode_branch"] = match.start()
 
     match = unique(original, P5, "P5 IOSurface factory target")
-    reg = match.group("reg")
-    replacement = (bytes.fromhex(
-        "41 b8 f5 84 00 00 4c 89 6c 24 18 89 44 24 10"
-        "89 04 24 0f b6 45"
-    ) + reg + bytes.fromhex("89 44 24 08 66 90"))
+    replacement = _p5_replacement(match)
     if len(replacement) != len(match.group()):
         raise GraphicsCompatError("P5 replacement size changed")
     data[match.start():match.end()] = replacement
@@ -99,14 +95,7 @@ def scan_and_patch(original, *, version, sha):
     positions["P6_IOSurfaceValidateTarget_BYPASS"] = target
 
     match = unique(original, P7, "P7 IOSurface backing target")
-    # All target fields come from the captured instruction, not M157 offsets.
-    replacement = (
-        bytes.fromhex("c7 83") + match.group("target") +
-        bytes.fromhex("f5 84 00 00 8a 45") + match.group("reg") +
-        bytes.fromhex("88 83") + match.group("other") +
-        bytes.fromhex("45 31 f6 44 89 b3") + match.group("zero") +
-        bytes.fromhex("66 44 89 b3") + match.group("short")
-    )
+    replacement = _p7_replacement(match)
     if len(replacement) != len(match.group()):
         raise GraphicsCompatError("P7 replacement size changed")
     data[match.start():match.end()] = replacement
@@ -115,6 +104,52 @@ def scan_and_patch(original, *, version, sha):
     if len(data) != len(original):
         raise GraphicsCompatError("Patched binary length changed")
     return bytes(data), positions, "STRUCTURAL_ONLY_UNTESTED"
+
+
+def _p5_replacement(match):
+    return (bytes.fromhex(
+        "41 b8 f5 84 00 00 4c 89 6c 24 18 89 44 24 10"
+        "89 04 24 0f b6 45"
+    ) + match.group("reg") + bytes.fromhex("89 44 24 08 66 90"))
+
+
+def _p7_replacement(match):
+    # All target fields come from the captured instruction, not M157 offsets.
+    return (
+        bytes.fromhex("c7 83") + match.group("target") +
+        bytes.fromhex("f5 84 00 00 8a 45") + match.group("reg") +
+        bytes.fromhex("88 83") + match.group("other") +
+        bytes.fromhex("45 31 f6 44 89 b3") + match.group("zero") +
+        bytes.fromhex("66 44 89 b3") + match.group("short")
+    )
+
+
+def make_p567_off_control(original, modified, positions):
+    """Restore P5/P6/P7 only, leaving P1/P2/P3 and launch flags unchanged."""
+    regions = (
+        ("P5_IOSurfaceFactoryTarget", unique(original, P5, "P5 IOSurface factory target"),
+         _p5_replacement),
+        ("P6_IOSurfaceValidateTarget_BYPASS", unique(original, P6, "P6 IOSurface target validation"),
+         lambda _match: P6_REPLACEMENT),
+        ("P7_IOSurfaceBackingTarget", unique(original, P7, "P7 IOSurface backing target"),
+         _p7_replacement),
+    )
+    result = bytearray(modified)
+    updated_positions = dict(positions)
+    for name, match, replacement_for in regions:
+        if name not in updated_positions or updated_positions[name] != match.start():
+            raise GraphicsCompatError(f"{name} missing or moved in proposed patch plan")
+        offset = match.start()
+        original_region = match.group()
+        patched_region = replacement_for(match)
+        if len(original_region) != len(patched_region):
+            raise GraphicsCompatError(f"{name} patch region size changed")
+        if result[offset:offset + len(patched_region)] != patched_region:
+            raise GraphicsCompatError(f"{name} proposed patch bytes unexpectedly changed")
+        result[offset:offset + len(original_region)] = original_region
+        del updated_positions[name]
+        updated_positions[name.removesuffix("_BYPASS") + "_ORIGINAL"] = offset
+    return bytes(result), updated_positions
 
 
 
@@ -152,20 +187,24 @@ def verify_patched_regions(staged_binary, expected_bytes, positions):
     position is compared against the bytes planned from the input DMG.
     The candidate must also pass codesign and an executable smoke test.
     """
-    required_base = {
-        "allowed_gl_jump", "display_init_jump",
-        "experimental_gl_mode_branch", "P5_IOSurfaceFactoryTarget",
-        "P7_IOSurfaceBackingTarget",
-    }
-    p6_names = {
-        "P6_IOSurfaceValidateTarget_BYPASS",
+    core = {"allowed_gl_jump", "display_init_jump", "experimental_gl_mode_branch"}
+    regular = core | {"P5_IOSurfaceFactoryTarget", "P7_IOSurfaceBackingTarget"}
+    states = (
+        {"P6_IOSurfaceValidateTarget_BYPASS"},
+        {"P6_IOSurfaceValidateTarget_ORIGINAL"},
+    )
+    p567_original = {
+        "P5_IOSurfaceFactoryTarget_ORIGINAL",
         "P6_IOSurfaceValidateTarget_ORIGINAL",
+        "P7_IOSurfaceBackingTarget_ORIGINAL",
     }
-    if (len(positions) != 6 or
-            set(positions).difference(p6_names) != required_base or
-            len(set(positions) & p6_names) != 1):
+    keys = set(positions)
+    valid = ((keys == (regular | states[0])) or
+             (keys == (regular | states[1])) or
+             (keys == (core | p567_original)))
+    if not valid:
         raise GraphicsCompatError(
-            f"Expected P1/P2/P3/P5/P7 and either original or bypassed P6: {list(positions)}"
+            f"Unexpected patch state for P1/P2/P3/P5/P6/P7: {list(positions)}"
         )
     for name, offset in positions.items():
         if name == "allowed_gl_jump":

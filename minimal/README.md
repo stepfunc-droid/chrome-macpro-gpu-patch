@@ -72,6 +72,22 @@ necessarily in every theoretically possible implementation. Do **not**
 move the P6-off control to Applications or lock it. Both builds retain
 GPU sandbox; P4 is excluded.
 
+### P5/P6/P7 A/B control (do not install)
+
+To compare the same P1/P2/P3 build with all three IOSurface edits left at
+their original instructions, prepare a separate control:
+
+```bash
+python3 minimal/prepare_chrome.py --without-p567
+"$HOME/Downloads/P5-P7-off/launch-chrome-gpu.sh"
+```
+
+The control keeps the P1/P2/P3 binary changes, ANGLE donor libraries, and GPU
+launch flags; only P5/P6/P7 are restored to the source framework's bytes. It
+uses its own disposable profile and cannot pass `lock_chrome.py`'s full-patch
+manifest check. Do not move it to Applications. Compare the same scrolling
+page and backdrop-filter cases against the standard candidate.
+
 ### Make the manually installed Chrome read-only
 
 Only *after* you have manually installed and checked the exact generated
