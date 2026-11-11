@@ -104,6 +104,21 @@ The original upstream's generic fallback signatures are deliberately *not*
 used: P4 requires exactly one complete anchored call/test/jump/mov sequence
 and will fail closed if it is absent or ambiguous.
 
+**If the P4 check reports `found 0`:** that means the upstream P4
+machine-code signature is not present in the original Chrome 157 binary.
+Do **not** use a generic conditional-jump search as a replacement patch.
+Instead run this standalone, read-only diagnostic (no donor DMG needed):
+
+```bash
+python3 minimal/diagnose_p4.py
+```
+
+It mounts `~/Downloads/googlechrome.dmg` read-only, checks the original
+Framework SHA-256, and prints a bounded report of candidate instruction
+contexts. The report contains **file offsets and hex bytes for analysis only**;
+none is automatically selected for patching. Compare with the compiled
+`GpuMain`/Seatbelt control flow before adding any new P4 patch signature.
+
 From the project root:
 
 ```bash
