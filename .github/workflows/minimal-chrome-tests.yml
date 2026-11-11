@@ -1,0 +1,22 @@
+name: Minimal Chrome pattern checks
+
+on:
+  push:
+    paths:
+      - "minimal/**"
+      - ".github/workflows/minimal-chrome-tests.yml"
+  pull_request:
+    paths:
+      - "minimal/**"
+      - ".github/workflows/minimal-chrome-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  byte-pattern-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test safe patch planner (synthetic fixtures only)
+        run: python3 -m unittest discover -s minimal -p 'test_*.py' -v

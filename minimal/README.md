@@ -1,0 +1,540 @@
+# Chrome ANGLE/OpenGL graphics compatibility experiments (Kepler/OCLP)
+
+**Status: experimental, NOT a verified Chrome 157 fix.** This is an
+independent alternative to the upstream multi-browser patcher, intended
+for testing a *copy* of Google Chrome on an Intel Mac with legacy OCLP GPU
+drivers. It does **not** patch your everyday Chrome installation.
+
+## Recommended workflow: two fixed DMGs, target version discovered automatically
+
+`minimal/prepare_chrome.py` is now the recommended entry point. Its input paths
+are fixed, but the Chrome **version is read from the target DMG**, not hardcoded:
+
+- `~/Downloads/googlechrome.dmg`: the target Chrome release
+- `~/Downloads/google-chrome-151-0-7922-174.dmg`: official ANGLE donor
+
+To check the next target version without generating files:
+
+```bash
+python3 minimal/prepare_chrome.py --check-only
+```
+
+The checker locates P1/P2/P3/P5/P6/P7 by anchored machine-code signatures,
+requires a unique match for every patch, verifies original instructions and
+replacement sizes, and refuses an unmatched or ambiguous build. P4 is
+excluded by default, with a separate exact-M157-only diagnostic opt-in. A matching new version is **structurally compatible**,
+but is NOT yet proven to work on the NVIDIA GT 750M.
+
+To prepare a new standalone candidate in Downloads:
+
+```bash
+python3 minimal/prepare_chrome.py
+```
+
+The command publishes a standard-named Chrome app, launch script, and
+versioned diagnostic manifest (refusing to overwrite
+existing ones): `~/Downloads/Google Chrome.app`,
+`~/Downloads/launch-chrome-gpu.sh` and
+`~/Downloads/chrome-gpu-<version>.patch.json`.
+Run the generated `.sh` to test actual rendering and `chrome://gpu`, using
+its separate disposable profile. It includes exactly the successful
+graphics compatibility arguments from the M157 test. The `.sh` can also
+launch the candidate after you **manually** move/rename it to
+`/Applications/Google Chrome.app`, but it first checks the signed
+framework SHA-256 from the build manifest.
+
+**No automatic /Applications installation.** A passing static scan,
+`codesign --verify`, and `--version` are not GPU functional tests. After
+confirming the UI/WebGL/GPU behaviour yourself, back up the existing
+installed browser and move the candidate manually.
+
+### P6 A/B test (do not install the control)
+
+To test whether P6's IOSurface validation bypass is necessary:
+
+```bash
+python3 minimal/prepare_chrome.py --without-p6
+"$HOME/Downloads/P6-off/launch-chrome-gpu.sh"
+```
+
+This prepares an independent `~/Downloads/P6-off/Google Chrome.app` from
+the same two fixed DMGs. Its only byte-level difference from the normal
+patch plan is that **P6 retains its original 20-byte prologue**, while
+P1/P2/P3/P5/P7 are identical. It also writes its own launch script
+and versioned patch report in the `P6-off` directory. The startup
+flags are the same, but the P6-off test gets its own disposable profile.
+Close other Chrome test instances before running it.
+
+Observe whether Chrome renders text/pages and whether a reproducible
+`backdrop-filter` blur still flickers. If it fails to render, that
+supports P6 being required in the *current* P5/P7 configuration, not
+necessarily in every theoretically possible implementation. Do **not**
+move the P6-off control to Applications or lock it. Both builds retain
+GPU sandbox; P4 is excluded.
+
+### P5/P6/P7 A/B control (do not install)
+
+To compare the same P1/P2/P3 build with all three IOSurface edits left at
+their original instructions, prepare a separate control:
+
+```bash
+python3 minimal/prepare_chrome.py --without-p567
+"$HOME/Downloads/P5-P7-off/launch-chrome-gpu.sh"
+```
+
+The control keeps the P1/P2/P3 binary changes, ANGLE donor libraries, and GPU
+launch flags; only P5/P6/P7 are restored to the source framework's bytes. It
+uses its own disposable profile and cannot pass `lock_chrome.py`'s full-patch
+manifest check. Do not move it to Applications. Compare the same scrolling
+page and backdrop-filter cases against the standard candidate.
+
+### P1–P7 all-on (P4 + P6): isolated diagnostic ONLY
+
+This option is for testing whether upstream P4 changes GPU initialization or
+rendering behaviour compared with our working six-patch Chrome 157. **It is
+not a recommended everyday browser**. P4 skips a GPU Seatbelt/sandbox-state
+failure branch. It does not turn off macOS sandbox, but it suppresses an
+important check and can hide an initialization failure.
+
+Both P4 **and** P6 are enabled; P1/P2/P3/P5/P7 remain identical to the
+standard six-patch plan. P6 already bypasses IOSurface target validation.
+P4 is limited to the **exact** original Chrome 157.0.8103.51 x86_64 Framework
+SHA256 `81fc51a5952b527f5cd8e9549107effde2f0d4655f75aab75bcfbebae7f6793b`.
+The upstream's generic fallback signatures are deliberately *not* used.
+The original upstream P4 sequence looked for a following
+`mov rdi,[rbx+0x88]`, but a read-only scan of the exact audited
+Chrome 157 Framework showed `mov rdi,[rbx+0x90]` after the corresponding
+call/test/JE pattern. The initial generic P4 scan correctly found zero.
+
+The M157-specific P4 candidate is now **pinned** to the observed original
+instruction bytes at file offset `0x1e1400a`. Only the six-byte
+`je near` at `0x1e14019` is changed from
+`0f 84 f7 00 00 00` to `90 90 90 90 90 90`.
+The SHA-256, binary size, expected original instructions, **unique**
+full-context occurrence, exact location, P1–P7 state and overlap checks
+must all pass before the experimental copy is created. All other
+versions and any unexpected byte layout fail closed.
+
+**Caveat:** the candidate is strongly consistent with the upstream P4
+machine-code shape, but exact `GpuMain`/Seatbelt function identity and
+the safety of bypassing its branch have **not** been proven by local
+symbol-aware disassembly. The change is **test-only**, not a proposed
+production/security fix. This experiment only asks whether the different
+branch affects GPU behaviour or filter flicker.
+
+To inspect the read-only evidence yourself (no donor DMG required):
+
+```bash
+python3 minimal/diagnose_p4.py
+```
+
+This mounts `~/Downloads/googlechrome.dmg` read-only and reports candidate
+byte contexts; it never patches anything.
+
+From the project root:
+
+```bash
+# Read-only check first. If P4 does not uniquely match, nothing is patched.
+python3 minimal/prepare_chrome.py --with-p4 --check-only
+
+# Only if the check succeeds:
+python3 minimal/prepare_chrome.py --with-p4
+
+# Independent application, launcher, profile, and JSON report:
+"$HOME/Downloads/P1-P7/launch-chrome-gpu.sh" chrome://gpu
+```
+
+Requires the two standard DMGs in `~/Downloads`. The output is in
+`~/Downloads/P1-P7/` and the launcher has **no /Applications fallback**.
+It refuses to overwrite an existing test. `--with-p4` cannot be combined
+with `--without-p6` or `--without-p567`.
+
+For a controlled comparison, close other Chrome test instances, use the same
+page and scrolling pattern in normal P1/P2/P3/P5/P6/P7 and P1–P7 all-on,
+and compare `chrome://gpu` (Sandboxed, GPU crashes, GaneshGL) and
+`filter`/`backdrop-filter` flicker. **Do not install this build, lock it, or
+use real passwords, banking, or exchange accounts.** A successful static check
+or codesign check does not prove P4's runtime safety or usefulness.
+
+Source for upstream P4 instruction pattern:
+https://github.com/khoinguyen88kt/chrome-macpro-gpu-patch/blob/main/patchers/chrome.py
+
+### Make the manually installed Chrome read-only
+
+Only *after* you have manually installed and checked the exact generated
+candidate at `/Applications/Google Chrome.app`, run:
+
+```bash
+python3 minimal/lock_chrome.py
+```
+
+This is an **explicit second action**, not an installation side effect.
+It checks `codesign`, the version and the signed framework SHA-256 against
+the manifest in Downloads, then removes write permissions and applies
+macOS user-immutable `uchg` to the app. It does not move or overwrite
+anything; it may fail if your account does not own the installed files.
+Neither file permissions nor `uchg` can absolutely block a privileged
+Google updater. There is no background watcher or automatic patcher.
+
+All future builds remain opt-in. This patcher does not disable SIP or
+GPU sandbox; P6 does bypass an IOSurface validation check, so patched
+Chrome should be considered a non-vendor-signed experimental build.
+
+---
+
+## Chrome 157 complete graphics compatibility mode (P4 excluded)
+
+This is an **opt-in graphics-focused test** for exactly Google Chrome
+157.0.8103.51 x86_64 framework SHA-256
+`81fc51a5952b527f5cd8e9549107effde2f0d4655f75aab75bcfbebae7f6793b`.
+
+The patcher applies all of these as ONE validated patch set:
+
+- **P1/P2:** Restore ANGLE OpenGL allowlist / display initialization.
+- **P3:** Adapt M157 hardware GPU mode candidate to HARDWARE_GL.
+- **P5/P7:** Adapt IOSurface texture targets to `GL_TEXTURE_RECTANGLE`.
+- **P6:** Make IOSurface texture-target validation always succeed. This is
+  **a graphics-related validation bypass and a security tradeoff**.
+- **P4 deliberately EXCLUDED:** Do not bypass Seatbelt sandbox-state checks.
+
+GPU crash fallback remains enabled. No `--no-sandbox`, SIP changes,
+launcher replacement, certificate installation, background service,
+automatic update or downloaded ANGLE libraries. The existing signed
+Chrome 151 app is the ANGLE library donor, and only a new copy is patched.
+
+Each original byte region and offset is matched against the audited
+Chrome 157 binary before the copy is created. Any mismatch aborts.
+**This is an unverified experiment on NVIDIA GT 750M, not an assurance**
+of stability, compatibility or safety. Do not use sensitive accounts.
+
+### Build a separate v4 test copy
+
+```bash
+git pull origin experiment/minimal-chrome-gl
+
+python3 minimal/patch_chrome.py \
+  --source "$HOME/Downloads/Google Chrome.app" \
+  --angle-from "/Applications/Google Chrome.app" \
+  --output "$HOME/Downloads/Chrome GPU Test v4.app" \
+  --experimental-version \
+  --full-graphics-compat \
+  --apply --debug
+```
+
+After signing, the patcher prints a launch command with all graphics flags.
+To run explicitly without replacing the original executable:
+
+```bash
+"$HOME/Downloads/Chrome GPU Test v4.app/Contents/MacOS/Google Chrome" \
+  --user-data-dir="$HOME/Downloads/Chrome-GPU-Full-Compat-Profile" \
+  --use-angle=gl \
+  --ignore-gpu-blocklist \
+  --disable-features=SkiaGraphite,MediaGmbVideoFramePoolMappableSI \
+  --disable-zero-copy \
+  --ui-disable-zero-copy \
+  --disable-gpu-memory-buffer-compositor-resources \
+  --disable-gpu-memory-buffer-video-frames \
+  --disable-accelerated-video-decode \
+  --disable-accelerated-2d-canvas \
+  --disable-partial-raster \
+  --no-first-run
+```
+
+Inspect `chrome://gpu`. A successful code-signature check is not proof
+of hardware acceleration. If UI artifacts or GPU crashes occur, quit
+this isolated copy. Do not weaken Sandbox or install auto-patching.
+
+Source attribution: the P1–P7 techniques (excluding P4) and flags are
+adapted from https://github.com/khoinguyen88kt/chrome-macpro-gpu-patch.
+
+## Scope / security choices
+
+- **Default: two framework edits only**: Chromium's OpenGL allowlist check and
+  ANGLE display-initialization jump (patterns derived from the upstream project).
+- **Opt-in M157 experiment:** a third, exact-build-only change that substitutes
+  a HARDWARE_GL candidate for the normally selected Graphite path. Not proven
+  on the user's GPU. The opt-in does not change other default behaviors.
+- **No** `Seatbelt::IsSandboxed()` or GPU sandbox edits.
+- **Default mode:** no IOSurface validation bypass; **opt-in full graphics mode:** P6 explicitly bypasses it (see above).
+- **No** GPU fallback disabling and no IOSurface texture-target edits.
+  The optional GPU-mode experiment adds a hardware GL candidate; normal
+  recovery/fallback code is not patched.
+- **No** launcher replacement, background agents, cron, software downloads,
+  automatic browser updates, repository self-updates, root privileges, or
+  `--no-sandbox` flags.
+- **No** use of the upstream repository's opaque `angle_dylibs/` binaries:
+  the ANGLE libraries must be supplied from your *own genuine Chrome 151*
+  app bundle. They may still be ABI-incompatible with newer Chrome versions.
+- Only operates on a new test copy in `~/Downloads/` by default (or another new path under your home).
+  It checks the clean inputs' signatures and Google's Team ID (EQHXZ8M8AV), refuses ambiguous byte patterns,
+  and verifies that signing succeeds before publishing the new copy.
+
+**Caveat:** It is not possible to modify Chrome's signed framework without
+changing its code identity. The test copy is signed **ad-hoc**, not by Google;
+this can affect Chrome Safe Storage, Keychain access, browser updates,
+privacy permissions, and other signature-bound behavior. **Do not sign in
+to banking, exchanges, or other sensitive sites with this test build.**
+The first implementation mistakenly used `codesign --deep --preserve-metadata`,
+which retained Google Team ID entitlements on ad-hoc-signed code. A real
+M157 test copy failed with `CODESIGNING: Taskgated Invalid Signature`.
+Now `minimal/signing.py` signs known nested components inside-out with
+Chromium's unbranded main-app capabilities and the JIT entitlement only
+for Renderer/GPU helpers. It does not preserve Google-specific app identifiers
+or Keychain groups. **It does not disable library validation** and can still
+fail to launch: Chromium documents that self-signed builds can be
+incompatible with its library validation settings. See:
+https://chromium.googlesource.com/chromium/src/+/main/chrome/installer/mac/signing/README.md
+
+Do not copy your real Chrome profile into the test build. The main goal
+of this first version is to see whether a GPU process can start without
+removing a sandbox assertion.
+
+## Requirements
+
+- Intel/x86_64 Mac running macOS with OCLP legacy GPU support.
+- A *clean* official latest Google Chrome app bundle to test, **separate**
+  from your current Chrome 151.
+- A *clean* official Chrome 151 app bundle to donate `libEGL.dylib` and
+  `libGLESv2.dylib`. If those files do not exist, stop; the script
+  deliberately does not fall back to the project-bundled binaries.
+- Python 3.9+ and the built-in `ditto` and `codesign` programs.
+- Adequate free disk space for a full additional Chrome bundle.
+
+Example layout (adjust paths to your actual copies):
+
+- `/Applications/Google Chrome.app` = your **current Chrome 151** (donor).
+- `~/Downloads/Google Chrome.app` = a **newer clean official Chrome** (input).
+- `~/Downloads/Chrome GPU Test.app` = **new output**, must not exist.
+
+### Read-only diagnostics for a new Chromium milestone
+
+If a newer version says "Display initialization check not unique or absent",
+the patcher **has not modified anything**. Get a bounded byte-pattern report:
+
+```bash
+python3 minimal/patch_chrome.py --diagnose   --source "$HOME/Downloads/Google Chrome.app"
+```
+
+Paste the terminal report into the discussion/PR so we can identify how
+that particular Chromium build changed. **Do not force a pattern match.**
+The reported offsets are only diagnostics, never automatically patched.
+
+### M157 GPU mode experiment — isolated optional third patch
+
+**For exactly one audited Chrome build**: Google Chrome 157.0.8103.51,
+x86_64 framework SHA-256
+`81fc51a5952b527f5cd8e9549107effde2f0d4655f75aab75bcfbebae7f6793b`.
+Any other binary hash, size, offset, or instruction sequence fails closed.
+
+Review of Chromium 157 source showed `supports_gpu_mode_hardware_gl_(false)`
+on macOS, so the standard build does **not** offer the HARDWARE_GL GPU mode.
+The one P3 candidate at file offset `0x1fa5846` checks a condition
+and writes `GpuMode=3` into the mode list. In **M157**, value 3 means
+`HARDWARE_GRAPHITE` (not `DISABLED`) and 1 means `HARDWARE_GL`.
+As an **experimental hypothesis**, we NOP *only* that conditional branch
+and change *only* that enum immediate from 3 to 1. This is an adaptation of
+upstream P3, not a blanket GPU fallthrough or a fix established on Kepler.
+
+P4 (Seatbelt/sandbox check), P6 (unconditional IOSurface validation),
+and P5/P7 (IOSurface rectangle target) remain **unmodified**. GPU crash
+fallback and the original launcher remain enabled.
+
+To create a **separate third-patch experiment**, keep the successful v2
+copy intact and choose a new destination:
+
+```bash
+python3 minimal/patch_chrome.py \
+  --source "$HOME/Downloads/Google Chrome.app" \
+  --angle-from "/Applications/Google Chrome.app" \
+  --output "$HOME/Downloads/Chrome GPU Test v3.app" \
+  --experimental-version --experimental-gpu-mode --apply --debug
+```
+
+On launch use only a disposable profile and the expected GL selection:
+
+```bash
+"$HOME/Downloads/Chrome GPU Test v3.app/Contents/MacOS/Google Chrome" \
+  --user-data-dir="$HOME/Downloads/Chrome-GPU-Mode-Profile" \
+  --use-angle=gl --ignore-gpu-blocklist \
+  --disable-features=SkiaGraphite --no-first-run
+```
+
+This may still fail inside the GPU process (ANGLE ABI/IOSurface issues);
+`--version` and `codesign --verify` alone are not sufficient evidence.
+Stop the test if the GPU repeatedly crashes. Test only `chrome://gpu`
+and inspect whether `--use-gl=disabled` has disappeared from the running
+GPU subprocess before doing any WebGL work.
+
+Source:
+https://github.com/chromium/chromium/blob/157.0.8103.51/content/browser/gpu/gpu_data_manager_impl_private.cc
+and
+https://github.com/chromium/chromium/blob/157.0.8103.51/gpu/config/gpu_mode.h
+
+### 1. Dry run (default: no writes)
+
+```bash
+python3 minimal/patch_chrome.py \
+  --source "$HOME/Downloads/Google Chrome.app" \
+  --angle-from "/Applications/Google Chrome.app" \
+  --output "$HOME/Downloads/Chrome GPU Test.app" \
+  --experimental-version
+```
+
+The optional `--experimental-version` flag is **required** outside the
+older M152/M153 milestone range. It only allows the scanner to try exact
+signatures; it does **not** establish compatibility with M157.
+
+If either expected byte pattern is missing or ambiguous, the tool refuses
+to patch. It does not attempt heuristic patching of arbitrary bytes.
+
+### 2. Create the test copy (only after reviewing dry-run output)
+
+```bash
+python3 minimal/patch_chrome.py \
+  --source "$HOME/Downloads/Google Chrome.app" \
+  --angle-from "/Applications/Google Chrome.app" \
+  --output "$HOME/Downloads/Chrome GPU Test.app" \
+  --experimental-version --apply
+```
+
+This copies the source to a temporary folder in Downloads using `ditto --norsrc`,
+removes only disallowed Finder/resource-fork extended attributes from that
+**temporary copy**, and verifies the copied app still has Google's original
+valid signature and Team ID **before** patching. This works around errors like
+`resource fork, Finder information, or similar detritus not allowed` without
+modifying the source. If the original code signature is actually invalid, it
+still refuses to proceed. It then modifies the copied framework, copies the
+two ANGLE libraries, ad-hoc signs and verifies the test copy, and finally
+moves it to the specified output path. On error it deletes the temporary copy,
+**never** the original browser.
+
+If you omit `--output`, the script defaults to
+`~/Downloads/Chrome GPU Test.app`.
+
+### 3. Test with a disposable profile
+
+Run the exact command printed by the script. It will resemble:
+
+```bash
+"$HOME/Downloads/Chrome GPU Test.app/Contents/MacOS/Google Chrome" \
+  --user-data-dir="$HOME/Downloads/Chrome-GPU-Test-Profile" \
+  --use-angle=gl --ignore-gpu-blocklist --no-first-run
+```
+
+The `--ignore-gpu-blocklist` switch overrides Chrome's GPU exclusions;
+it is **only** intended for this experimental test session. If possible,
+test first **without** it as well.
+
+Visit `chrome://gpu`, and check:
+- `Graphics Feature Status` (especially Compositing and WebGL).
+- `GL_RENDERER` / ANGLE renderer, to rule out SwiftShader/software.
+- `Log Messages` / GPU process crashes, plus `chrome://version`.
+
+An ad-hoc signature verification passing is **not** proof of rendering
+success. Missing shaders, ABI drift, IOSurface incompatibilities, or
+GPU sandbox errors may still cause software fallback or crashes.
+If the safe two-patch approach fails, collect the GPU logs before deciding
+whether any additional change is justified. **Never** turn off the full
+browser sandbox merely to make the probe pass.
+
+### Diagnose immediate SIGKILL on launch (no writes)
+
+If the copied Chrome binary exits immediately with SIGKILL (even with
+`--version`), do **not** change sandbox settings, SIP, or GPU patch
+patterns yet. First collect the actual termination reason from the
+macOS `.ips` crash report:
+
+```bash
+git pull origin experiment/minimal-chrome-gl
+python3 minimal/inspect_crash.py
+```
+
+The report prints process path, code-signing identity, exception, and
+termination, but not stack traces or full private crash contents. Ensure
+`procPath` points to **Chrome GPU Test.app**, not your regular Chrome.
+This project's ad-hoc signature currently preserves original Google
+Chrome entitlements including the proprietary
+`EQHXZ8M8AV.com.google.Chrome` application identifier and Google-only
+Keychain groups. Chromium's signing docs explain that re-signing a
+Google-branded Chrome build with those entitlements can prevent launch.
+Do not mistake successful `codesign --verify` for launch permission.
+This issue must be diagnosed before any further GPU patch changes.
+
+### Diagnosing a staged Libraries permission error
+
+If the staged copy reports `Operation not permitted` for
+`.../Versions/<version>/Libraries`, the old implementation may have
+been unable to enumerate that directory during signing, or an error during
+staging cleanup may have hidden the real signing failure. The current
+version signs only the explicitly replaced ANGLE dylibs and labels each
+operation (use `--debug` to print the traceback). Cleanup errors are
+reported separately rather than replacing the original error.
+
+A failed run may leave a hidden temporary directory in Downloads named
+`.chrome-gl-test-*`. Inspect the **specific** staging path printed in the
+error before deleting it; never invoke `sudo rm -rf` over a wildcard.
+These temporary files are not your official Chrome installation.
+
+#### Confirmed cause of `codesign libEGL.dylib: Operation not permitted`
+
+On the first M157 staging attempt, `ls -ldeO@` on the actual failed
+`libEGL.dylib` showed the **`uchg` (user immutable)** BSD file flag.
+That flag makes `codesign --force` fail and prevents cleanup from
+unlinking the library. The old `shutil.copy2` call copied the donor's
+metadata, including BSD flags. **Fixed:** donor ANGLE libraries now
+use `shutil.copyfile` plus explicitly restoring just Unix file mode,
+never copying source BSD flags or xattrs. The script also refuses to
+overwrite symlinked destination libraries.
+
+Existing orphan staging copies from old runs are *not* repaired
+automatically. Do not run a broad recursive `chflags` or `sudo`.
+For the specific already-inspected `libEGL.dylib`, it is reasonable
+to use `chflags nouchg` on **that staged file only**, then inspect
+other remaining staged files before deleting the old temp directory.
+Never change the installed Chrome 151 donor or official Chrome 157.
+
+### Rebuilding after a signature-invalid SIGKILL
+
+If you already have `~/Downloads/Chrome GPU Test.app` created with the
+old signing logic, **do not overwrite it**. Pull the updated branch
+and create a separate output:
+
+```bash
+git pull origin experiment/minimal-chrome-gl
+
+python3 minimal/patch_chrome.py \
+  --source "$HOME/Downloads/Google Chrome.app" \
+  --angle-from "/Applications/Google Chrome.app" \
+  --output "$HOME/Downloads/Chrome GPU Test v2.app" \
+  --experimental-version --apply
+```
+
+Check the new copy with:
+
+```bash
+codesign -d --entitlements :- "$HOME/Downloads/Chrome GPU Test v2.app" 2>/dev/null | plutil -p -
+
+"$HOME/Downloads/Chrome GPU Test v2.app/Contents/MacOS/Google Chrome" --version
+```
+
+The entitlements should **not** include `EQHXZ8M8AV`-prefixed
+Google identity or Keychain group entries. If `--version` exits with
+SIGKILL, use `python3 minimal/inspect_crash.py` and verify that
+`procPath` is the **v2** app, rather than making additional GPU patches.
+
+### Restore / clean up
+
+Close the test browser, then remove only the `Chrome GPU Test.app` and
+`Chrome-GPU-Test-Profile` folders you created. Your existing signed Chrome
+and Google profile have not been modified. Do not use the upstream
+`--restore` flow on your original Chrome for this experiment.
+
+### Local tests (pattern logic only)
+
+```bash
+python3 -m unittest discover -s minimal -p 'test_*.py'
+```
+
+These synthetic tests check binary offsets and rejection cases; they cannot
+simulate a real Chrome GPU process. No Kepler/M157 runtime validation has
+been performed by this project.
